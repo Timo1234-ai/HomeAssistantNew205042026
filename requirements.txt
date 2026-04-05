@@ -1,0 +1,6 @@
+# Runtime dependencies for HomeAssistantNew205042026
+# The application uses only the Python standard library at runtime,
+# so no third-party packages are required.
+
+# Development / testing
+pytest>=7.0
