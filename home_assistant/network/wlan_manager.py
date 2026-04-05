@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
-import subprocess
+import platform
 import re
+import shutil
+import subprocess
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -15,7 +17,7 @@ def _split_nmcli(line: str) -> list[str]:
     """Split a nmcli terse-mode line respecting backslash-escaped colons.
 
     nmcli uses ``:`` as field separator in ``-t`` mode and escapes literal
-    colons inside values as ``\\:``.  This helper splits on unescaped colons
+    colons inside values as ``\\:``. This helper splits on unescaped colons
     and then removes the escape from remaining values.
     """
     parts = re.split(r"(?<!\\):", line)
@@ -25,9 +27,10 @@ def _split_nmcli(line: str) -> list[str]:
 @dataclass
 class WlanNetwork:
     """Represents a scanned WLAN access-point."""
+
     ssid: str
     bssid: str = ""
-    signal: int = 0          # dBm
+    signal: int = 0
     channel: int = 0
     security: str = ""
     frequency: str = ""
@@ -36,6 +39,7 @@ class WlanNetwork:
 @dataclass
 class WlanStatus:
     """Current WLAN connection state."""
+
     connected: bool = False
     ssid: str = ""
     bssid: str = ""
@@ -48,9 +52,14 @@ class WlanStatus:
 class WlanManager:
     """Scan for and connect to WLAN networks.
 
-    Uses operating-system CLI tools (``iwlist``, ``nmcli``) so no root
-    credentials need to be stored in the application.
+    Uses operating-system CLI tools. Linux primarily uses ``nmcli`` / ``iw*``
+    tools, while macOS uses Apple's ``airport`` tooling.
     """
+
+    AIRPORT_BIN = (
+        "/System/Library/PrivateFrameworks/Apple80211.framework/"
+        "Versions/Current/Resources/airport"
+    )
 
     def __init__(self, interface: Optional[str] = None) -> None:
         self.interface = interface or self._detect_interface()
@@ -62,48 +71,105 @@ class WlanManager:
     def get_status(self) -> WlanStatus:
         """Return current WLAN connection status."""
         status = WlanStatus(interface=self.interface)
+
+        # Linux path first.
         try:
             status = self._nmcli_status(status)
         except Exception:
             try:
                 status = self._iwconfig_status(status)
             except Exception as exc:
-                logger.debug("Could not determine WLAN status: %s", exc)
+                logger.debug("Linux WLAN status fallback failed: %s", exc)
+
+        # macOS fallback when Linux path cannot provide a connected status.
+        if (not status.connected) and platform.system() == "Darwin":
+            try:
+                status = self._macos_status(status)
+            except Exception as exc:
+                logger.debug("Could not determine macOS WLAN status: %s", exc)
         return status
 
     def scan_networks(self) -> list[WlanNetwork]:
         """Return a list of visible WLAN access-points."""
         networks: list[WlanNetwork] = []
+
+        # Linux path first.
         try:
             networks = self._nmcli_scan()
         except Exception:
             try:
                 networks = self._iwlist_scan()
             except Exception as exc:
-                logger.debug("Network scan failed: %s", exc)
+                logger.debug("Linux WLAN scan fallback failed: %s", exc)
+
+        # macOS fallback when Linux tools are unavailable.
+        if (not networks) and platform.system() == "Darwin":
+            try:
+                networks = self._macos_scan()
+            except Exception as exc:
+                logger.debug("macOS WLAN scan failed: %s", exc)
         return networks
 
     def connect(self, ssid: str, password: str = "") -> bool:
-        """Connect to an SSID using nmcli."""
-        # Validate SSID to prevent command-line injection
+        """Connect to an SSID using nmcli on Linux."""
         if not ssid or len(ssid) > 32:
             logger.error("Invalid SSID (empty or too long)")
             return False
-        # Allow only printable ASCII characters that are safe for CLI use
         if not all(0x20 <= ord(c) <= 0x7E for c in ssid):
             logger.error("SSID contains non-printable characters")
             return False
+
         try:
             cmd = ["nmcli", "device", "wifi", "connect", ssid]
             if password:
                 cmd += ["password", password]
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=30
-            )
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             return result.returncode == 0
         except Exception as exc:
             logger.error("Failed to connect to %s: %s", ssid, exc)
             return False
+
+    def get_diagnostics(self) -> dict:
+        """Return WLAN scan diagnostics for the current runtime host."""
+        interface = self.interface or ""
+        diagnostics = {
+            "platform": platform.system(),
+            "interface": interface,
+            "tools": {
+                "nmcli": shutil.which("nmcli") is not None,
+                "iw": shutil.which("iw") is not None,
+                "iwconfig": shutil.which("iwconfig") is not None,
+                "iwlist": shutil.which("iwlist") is not None,
+                "ip": shutil.which("ip") is not None,
+                "networksetup": shutil.which("networksetup") is not None,
+                "airport": shutil.which(self.AIRPORT_BIN) is not None,
+            },
+            "commands": {},
+            "notes": [
+                "Scans run on the host where this app is running.",
+                "Remote/container environments cannot see nearby laptop Wi-Fi networks.",
+            ],
+        }
+
+        diagnostics["commands"]["iw_dev"] = self._run_diag_command(["iw", "dev"])
+        diagnostics["commands"]["nmcli_wifi_list"] = self._run_diag_command(
+            ["nmcli", "-t", "-f", "SSID,SIGNAL,DEVICE", "device", "wifi", "list"]
+        )
+        diagnostics["commands"]["iwconfig_interface"] = self._run_diag_command(
+            ["iwconfig", interface] if interface else ["iwconfig"]
+        )
+        diagnostics["commands"]["iwlist_scan"] = self._run_diag_command(
+            ["iwlist", interface, "scan"] if interface else ["iwlist", "scan"],
+            timeout=20,
+        )
+        diagnostics["commands"]["networksetup_ports"] = self._run_diag_command(
+            ["networksetup", "-listallhardwareports"]
+        )
+        diagnostics["commands"]["airport_scan"] = self._run_diag_command(
+            [self.AIRPORT_BIN, "-s"],
+            timeout=15,
+        )
+        return diagnostics
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -112,10 +178,25 @@ class WlanManager:
     @staticmethod
     def _detect_interface() -> str:
         """Return first available wireless interface."""
+        if platform.system() == "Darwin":
+            try:
+                out = subprocess.check_output(
+                    ["networksetup", "-listallhardwareports"],
+                    text=True,
+                    timeout=5,
+                )
+                chunks = out.split("\n\n")
+                for chunk in chunks:
+                    if "Hardware Port: Wi-Fi" in chunk:
+                        m = re.search(r"Device: (\S+)", chunk)
+                        if m:
+                            return m.group(1)
+            except Exception:
+                pass
+            return "en0"
+
         try:
-            out = subprocess.check_output(
-                ["iw", "dev"], text=True, timeout=5
-            )
+            out = subprocess.check_output(["iw", "dev"], text=True, timeout=5)
             for line in out.splitlines():
                 m = re.search(r"Interface\s+(\S+)", line)
                 if m:
@@ -126,9 +207,9 @@ class WlanManager:
 
     def _nmcli_status(self, status: WlanStatus) -> WlanStatus:
         out = subprocess.check_output(
-            ["nmcli", "-t", "-f", "ACTIVE,SSID,BSSID,SIGNAL,DEVICE",
-             "device", "wifi"],
-            text=True, timeout=5
+            ["nmcli", "-t", "-f", "ACTIVE,SSID,BSSID,SIGNAL,DEVICE", "device", "wifi"],
+            text=True,
+            timeout=5,
         )
         for line in out.splitlines():
             parts = _split_nmcli(line)
@@ -145,31 +226,35 @@ class WlanManager:
 
     def _nmcli_scan(self) -> list[WlanNetwork]:
         out = subprocess.check_output(
-            ["nmcli", "-t", "-f", "SSID,BSSID,SIGNAL,CHAN,SECURITY,FREQ",
-             "device", "wifi", "list"],
-            text=True, timeout=10
+            ["nmcli", "-t", "-f", "SSID,BSSID,SIGNAL,CHAN,SECURITY,FREQ", "device", "wifi", "list"],
+            text=True,
+            timeout=10,
         )
         networks: list[WlanNetwork] = []
         for line in out.splitlines():
             parts = _split_nmcli(line)
             if len(parts) >= 6 and parts[0]:
                 try:
-                    networks.append(WlanNetwork(
-                        ssid=parts[0],
-                        bssid=parts[1],
-                        signal=int(parts[2]) if parts[2].isdigit() else 0,
-                        channel=int(parts[3]) if parts[3].isdigit() else 0,
-                        security=parts[4],
-                        frequency=parts[5],
-                    ))
+                    networks.append(
+                        WlanNetwork(
+                            ssid=parts[0],
+                            bssid=parts[1],
+                            signal=int(parts[2]) if parts[2].isdigit() else 0,
+                            channel=int(parts[3]) if parts[3].isdigit() else 0,
+                            security=parts[4],
+                            frequency=parts[5],
+                        )
+                    )
                 except (ValueError, IndexError):
                     continue
         return networks
 
     def _iwconfig_status(self, status: WlanStatus) -> WlanStatus:
         out = subprocess.check_output(
-            ["iwconfig", self.interface], text=True,
-            stderr=subprocess.DEVNULL, timeout=5
+            ["iwconfig", self.interface],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
         )
         if "ESSID:" in out:
             m = re.search(r'ESSID:"([^"]*)"', out)
@@ -187,7 +272,9 @@ class WlanManager:
     def _iwlist_scan(self) -> list[WlanNetwork]:
         out = subprocess.check_output(
             ["iwlist", self.interface, "scan"],
-            text=True, stderr=subprocess.DEVNULL, timeout=15
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
         )
         networks: list[WlanNetwork] = []
         current: dict = {}
@@ -217,14 +304,122 @@ class WlanManager:
             networks.append(WlanNetwork(**current))
         return networks
 
+    def _macos_status(self, status: WlanStatus) -> WlanStatus:
+        """Get current macOS Wi-Fi status using airport output."""
+        out = subprocess.check_output([self.AIRPORT_BIN, "-I"], text=True, timeout=5)
+        ssid_match = re.search(r"\bSSID: (.+)", out)
+        bssid_match = re.search(r"\bBSSID: (.+)", out)
+        rssi_match = re.search(r"\bagrCtlRSSI: (-?\d+)", out)
+
+        if ssid_match:
+            status.ssid = ssid_match.group(1).strip()
+            status.connected = bool(status.ssid)
+        if bssid_match:
+            status.bssid = bssid_match.group(1).strip()
+        if rssi_match:
+            status.signal = int(rssi_match.group(1))
+
+        status.interface = self.interface or "en0"
+        if status.connected:
+            status.ip_address = self._get_ip(status.interface)
+        return status
+
+    def _macos_scan(self) -> list[WlanNetwork]:
+        """Scan visible WLAN networks on macOS using airport."""
+        out = subprocess.check_output([self.AIRPORT_BIN, "-s"], text=True, timeout=12)
+        networks: list[WlanNetwork] = []
+
+        # Skip header line. SSID may have spaces, so parse around BSSID pattern.
+        for line in out.splitlines()[1:]:
+            line = line.rstrip()
+            if not line:
+                continue
+            match = re.match(
+                r"^(.*?)\s+((?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2})\s+(-?\d+)\s+(\S+)\s+\S+\s+\S+\s+(.+)$",
+                line,
+            )
+            if not match:
+                continue
+
+            ssid = match.group(1).strip()
+            bssid = match.group(2)
+            signal = int(match.group(3))
+            channel_raw = match.group(4)
+            security = match.group(5).strip()
+
+            channel_base = channel_raw.split(",", 1)[0]
+            channel_base = channel_base.split("+", 1)[0]
+            channel = int(channel_base) if channel_base.isdigit() else 0
+
+            if ssid:
+                networks.append(
+                    WlanNetwork(
+                        ssid=ssid,
+                        bssid=bssid,
+                        signal=signal,
+                        channel=channel,
+                        security=security,
+                    )
+                )
+        return networks
+
     @staticmethod
     def _get_ip(interface: str) -> str:
         try:
+            if platform.system() == "Darwin":
+                out = subprocess.check_output(
+                    ["ipconfig", "getifaddr", interface],
+                    text=True,
+                    timeout=5,
+                    stderr=subprocess.DEVNULL,
+                )
+                return out.strip()
+
             out = subprocess.check_output(
                 ["ip", "-4", "addr", "show", interface],
-                text=True, timeout=5
+                text=True,
+                timeout=5,
             )
             m = re.search(r"inet (\d+\.\d+\.\d+\.\d+)", out)
             return m.group(1) if m else ""
         except Exception:
             return ""
+
+    @staticmethod
+    def _run_diag_command(cmd: list[str], timeout: int = 8) -> dict:
+        """Execute command and return structured output for diagnostics."""
+        binary = cmd[0] if cmd else ""
+        if not binary or shutil.which(binary) is None:
+            return {
+                "command": " ".join(cmd),
+                "available": False,
+                "ok": False,
+                "returncode": None,
+                "stdout": "",
+                "stderr": f"'{binary}' not found",
+            }
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            return {
+                "command": " ".join(cmd),
+                "available": True,
+                "ok": result.returncode == 0,
+                "returncode": result.returncode,
+                "stdout": result.stdout.strip()[:4000],
+                "stderr": result.stderr.strip()[:2000],
+            }
+        except Exception as exc:
+            return {
+                "command": " ".join(cmd),
+                "available": True,
+                "ok": False,
+                "returncode": None,
+                "stdout": "",
+                "stderr": str(exc),
+            }

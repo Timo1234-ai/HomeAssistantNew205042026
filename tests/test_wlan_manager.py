@@ -114,3 +114,46 @@ class TestWlanManagerScan:
         wm = WlanManager(interface="wlan0")
         ok = wm.connect("Net\x00work")
         assert ok is False
+
+    def test_get_diagnostics_contains_core_keys(self):
+        wm = WlanManager(interface="wlan0")
+        fake_result = MagicMock()
+        fake_result.returncode = 0
+        fake_result.stdout = "ok"
+        fake_result.stderr = ""
+
+        with patch("shutil.which", return_value="/usr/bin/tool"):
+            with patch("subprocess.run", return_value=fake_result):
+                diag = wm.get_diagnostics()
+
+        assert diag["interface"] == "wlan0"
+        assert "tools" in diag
+        assert "commands" in diag
+        assert "nmcli_wifi_list" in diag["commands"]
+
+    def test_macos_scan_parses_networks(self):
+        wm = WlanManager(interface="en0")
+        airport_output = (
+            "SSID BSSID RSSI CHANNEL HT CC SECURITY\n"
+            "hacienda2 aa:bb:cc:dd:ee:ff -55 6 Y US WPA2(PSK/AES/AES)\n"
+            "hacienda-iot 11:22:33:44:55:66 -62 11 Y US WPA2(PSK/AES/AES)\n"
+        )
+        with patch("subprocess.check_output", return_value=airport_output):
+            nets = wm._macos_scan()
+        assert len(nets) == 2
+        assert nets[0].ssid == "hacienda2"
+        assert nets[1].ssid == "hacienda-iot"
+
+    def test_macos_status_parses_connected_network(self):
+        wm = WlanManager(interface="en0")
+        airport_output = (
+            "     agrCtlRSSI: -49\n"
+            "          BSSID: aa:bb:cc:dd:ee:ff\n"
+            "           SSID: hacienda2\n"
+        )
+        with patch("subprocess.check_output", return_value=airport_output):
+            with patch.object(wm, "_get_ip", return_value="192.168.1.20"):
+                status = wm._macos_status(WlanStatus(interface="en0"))
+        assert status.connected is True
+        assert status.ssid == "hacienda2"
+        assert status.ip_address == "192.168.1.20"

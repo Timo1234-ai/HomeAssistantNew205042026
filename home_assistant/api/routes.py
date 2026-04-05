@@ -56,6 +56,12 @@ def wlan_networks() -> Any:
     ])
 
 
+@api.get("/wlan/diagnostics")
+def wlan_diagnostics() -> Any:
+    """Return WLAN diagnostic details for troubleshooting scan issues."""
+    return jsonify(wlan_manager.get_diagnostics())
+
+
 @api.post("/wlan/connect")
 def wlan_connect() -> Any:
     """Connect to a WLAN network."""

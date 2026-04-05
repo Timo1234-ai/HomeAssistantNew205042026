@@ -53,6 +53,22 @@ class TestWlanRoutes:
         assert len(data) == 2
         assert data[0]["ssid"] == "Net1"
 
+    def test_wlan_diagnostics(self, client):
+        diag = {
+            "interface": "wlan0",
+            "tools": {"nmcli": True},
+            "commands": {"iw_dev": {"ok": True}},
+            "notes": ["example"],
+        }
+        with patch("home_assistant.api.routes.wlan_manager") as mock_wm:
+            mock_wm.get_diagnostics.return_value = diag
+            r = client.get("/api/wlan/diagnostics")
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["interface"] == "wlan0"
+        assert "tools" in data
+        assert "commands" in data
+
     def test_wlan_connect_success(self, client):
         with patch("home_assistant.api.routes.wlan_manager") as mock_wm:
             mock_wm.connect.return_value = True
