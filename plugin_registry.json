@@ -1,0 +1,20 @@
+{
+  "tplink_kasa": {
+    "name": "TP-Link Kasa",
+    "description": "Control TP-Link Kasa smart plugs, bulbs and power strips",
+    "version": "1.0.0",
+    "url": "https://raw.githubusercontent.com/Timo1234-ai/HomeAssistantNew205042026/main/community_plugins/tplink_kasa.py"
+  },
+  "wled": {
+    "name": "WLED",
+    "description": "Control WLED LED strip controllers",
+    "version": "1.0.0",
+    "url": "https://raw.githubusercontent.com/Timo1234-ai/HomeAssistantNew205042026/main/community_plugins/wled.py"
+  },
+  "shelly": {
+    "name": "Shelly",
+    "description": "Control Shelly smart relays and sensors",
+    "version": "1.0.0",
+    "url": "https://raw.githubusercontent.com/Timo1234-ai/HomeAssistantNew205042026/main/community_plugins/shelly.py"
+  }
+}
