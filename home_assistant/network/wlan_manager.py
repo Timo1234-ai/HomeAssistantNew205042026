@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import platform
 import re
 import shutil
@@ -56,10 +57,10 @@ class WlanManager:
     tools, while macOS uses Apple's ``airport`` tooling.
     """
 
-    AIRPORT_BIN = (
-        "/System/Library/PrivateFrameworks/Apple80211.framework/"
-        "Versions/Current/Resources/airport"
-    )
+    AIRPORT_BINS = [
+        "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport",
+        "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/A/Resources/airport",
+    ]
 
     def __init__(self, interface: Optional[str] = None) -> None:
         self.interface = interface or self._detect_interface()
@@ -132,6 +133,7 @@ class WlanManager:
     def get_diagnostics(self) -> dict:
         """Return WLAN scan diagnostics for the current runtime host."""
         interface = self.interface or ""
+        airport_bin = self._macos_airport_bin()
         diagnostics = {
             "platform": platform.system(),
             "interface": interface,
@@ -142,7 +144,8 @@ class WlanManager:
                 "iwlist": shutil.which("iwlist") is not None,
                 "ip": shutil.which("ip") is not None,
                 "networksetup": shutil.which("networksetup") is not None,
-                "airport": shutil.which(self.AIRPORT_BIN) is not None,
+                "airport": airport_bin is not None,
+                "system_profiler": shutil.which("system_profiler") is not None,
             },
             "commands": {},
             "notes": [
@@ -165,9 +168,16 @@ class WlanManager:
         diagnostics["commands"]["networksetup_ports"] = self._run_diag_command(
             ["networksetup", "-listallhardwareports"]
         )
+        diagnostics["commands"]["networksetup_current"] = self._run_diag_command(
+            ["networksetup", "-getairportnetwork", interface] if interface else ["networksetup", "-getairportnetwork", "en0"]
+        )
         diagnostics["commands"]["airport_scan"] = self._run_diag_command(
-            [self.AIRPORT_BIN, "-s"],
+            [airport_bin, "-s"] if airport_bin else ["airport", "-s"],
             timeout=15,
+        )
+        diagnostics["commands"]["system_profiler_airport"] = self._run_diag_command(
+            ["system_profiler", "SPAirPortDataType"],
+            timeout=30,
         )
         return diagnostics
 
@@ -306,18 +316,32 @@ class WlanManager:
 
     def _macos_status(self, status: WlanStatus) -> WlanStatus:
         """Get current macOS Wi-Fi status using airport output."""
-        out = subprocess.check_output([self.AIRPORT_BIN, "-I"], text=True, timeout=5)
-        ssid_match = re.search(r"\bSSID: (.+)", out)
-        bssid_match = re.search(r"\bBSSID: (.+)", out)
-        rssi_match = re.search(r"\bagrCtlRSSI: (-?\d+)", out)
+        airport_bin = self._macos_airport_bin()
+        if airport_bin:
+            out = subprocess.check_output([airport_bin, "-I"], text=True, timeout=5)
+            ssid_match = re.search(r"\bSSID: (.+)", out)
+            bssid_match = re.search(r"\bBSSID: (.+)", out)
+            rssi_match = re.search(r"\bagrCtlRSSI: (-?\d+)", out)
 
-        if ssid_match:
-            status.ssid = ssid_match.group(1).strip()
-            status.connected = bool(status.ssid)
-        if bssid_match:
-            status.bssid = bssid_match.group(1).strip()
-        if rssi_match:
-            status.signal = int(rssi_match.group(1))
+            if ssid_match:
+                status.ssid = ssid_match.group(1).strip()
+                status.connected = bool(status.ssid)
+            if bssid_match:
+                status.bssid = bssid_match.group(1).strip()
+            if rssi_match:
+                status.signal = int(rssi_match.group(1))
+        else:
+            # Fallback for macOS versions without the private airport binary.
+            out = subprocess.check_output(
+                ["networksetup", "-getairportnetwork", self.interface or "en0"],
+                text=True,
+                timeout=5,
+                stderr=subprocess.DEVNULL,
+            )
+            m = re.search(r"Current Wi-Fi Network: (.+)", out)
+            if m:
+                status.ssid = m.group(1).strip()
+                status.connected = bool(status.ssid)
 
         status.interface = self.interface or "en0"
         if status.connected:
@@ -326,7 +350,11 @@ class WlanManager:
 
     def _macos_scan(self) -> list[WlanNetwork]:
         """Scan visible WLAN networks on macOS using airport."""
-        out = subprocess.check_output([self.AIRPORT_BIN, "-s"], text=True, timeout=12)
+        airport_bin = self._macos_airport_bin()
+        if not airport_bin:
+            return self._macos_scan_system_profiler()
+
+        out = subprocess.check_output([airport_bin, "-s"], text=True, timeout=12)
         networks: list[WlanNetwork] = []
 
         # Skip header line. SSID may have spaces, so parse around BSSID pattern.
@@ -361,6 +389,89 @@ class WlanManager:
                         security=security,
                     )
                 )
+        return networks
+
+    @staticmethod
+    def _macos_airport_bin() -> Optional[str]:
+        for candidate in WlanManager.AIRPORT_BINS:
+            if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        return None
+
+    def _macos_scan_system_profiler(self) -> list[WlanNetwork]:
+        """Fallback scan parser for macOS versions without airport binary."""
+        out = subprocess.check_output(
+            ["system_profiler", "SPAirPortDataType"],
+            text=True,
+            timeout=30,
+        )
+
+        networks: list[WlanNetwork] = []
+        in_local_section = False
+        current: Optional[WlanNetwork] = None
+
+        def flush_current() -> None:
+            nonlocal current
+            if current and current.ssid:
+                networks.append(current)
+            current = None
+
+        meta_keys = {
+            "PHY Mode",
+            "Channel",
+            "Country Code",
+            "Network Type",
+            "Security",
+            "Signal / Noise",
+            "Supported Channels",
+        }
+
+        for raw in out.splitlines():
+            line = raw.rstrip()
+
+            if "Other Local Wi-Fi Networks:" in line:
+                in_local_section = True
+                continue
+
+            if not in_local_section:
+                continue
+
+            # Section ends when indentation drops away from the local list.
+            if line and not line.startswith("      "):
+                flush_current()
+                break
+
+            m_header = re.match(r"^\s{6,}(.+):\s*$", line)
+            if m_header:
+                name = m_header.group(1).strip()
+                if name in meta_keys:
+                    # Property line of existing network.
+                    if current and name == "Channel":
+                        m_ch = re.search(r"(\d+)", line)
+                        if m_ch:
+                            current.channel = int(m_ch.group(1))
+                    continue
+
+                flush_current()
+                current = WlanNetwork(ssid=name)
+                continue
+
+            if not current:
+                continue
+
+            m_sec = re.search(r"Security:\s*(.+)$", line)
+            if m_sec:
+                current.security = m_sec.group(1).strip()
+
+            m_signal = re.search(r"Signal / Noise:\s*(-?\d+)", line)
+            if m_signal:
+                current.signal = int(m_signal.group(1))
+
+            m_channel = re.search(r"Channel:\s*(\d+)", line)
+            if m_channel:
+                current.channel = int(m_channel.group(1))
+
+        flush_current()
         return networks
 
     @staticmethod

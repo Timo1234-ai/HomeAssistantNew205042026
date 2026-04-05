@@ -157,3 +157,26 @@ class TestWlanManagerScan:
         assert status.connected is True
         assert status.ssid == "hacienda2"
         assert status.ip_address == "192.168.1.20"
+
+    def test_macos_scan_system_profiler_parses_networks(self):
+        wm = WlanManager(interface="en0")
+        profiler_output = (
+            "Wi-Fi:\n"
+            "\n"
+            "      Other Local Wi-Fi Networks:\n"
+            "          hacienda2:\n"
+            "              Security: WPA2 Personal\n"
+            "              Signal / Noise: -52 dBm / -90 dBm\n"
+            "              Channel: 6\n"
+            "          hacienda-iot:\n"
+            "              Security: WPA2 Personal\n"
+            "              Signal / Noise: -60 dBm / -90 dBm\n"
+            "              Channel: 11\n"
+            "\n"
+        )
+        with patch("subprocess.check_output", return_value=profiler_output):
+            nets = wm._macos_scan_system_profiler()
+        assert len(nets) == 2
+        assert nets[0].ssid == "hacienda2"
+        assert nets[0].channel == 6
+        assert nets[1].ssid == "hacienda-iot"
