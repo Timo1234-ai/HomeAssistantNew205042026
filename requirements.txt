@@ -1,0 +1,8 @@
+flask>=3.0.0
+flask-cors>=4.0.0
+requests>=2.31.0
+scapy>=2.5.0
+zeroconf>=0.131.0
+netifaces>=0.11.0
+python-nmap>=0.7.1
+macaddress>=2.0.2
