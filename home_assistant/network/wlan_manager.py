@@ -553,7 +553,7 @@ class WlanManager:
                         signal=int(current.get("signal", 0) or 0),
                         channel=int(current.get("channel", 0) or 0),
                         security=current_security,
-                                            frequency=str(current.get("frequency", current_frequency)),
+                        frequency=str(current.get("frequency", current_frequency)),
                     )
                 )
             current = {}
@@ -567,8 +567,8 @@ class WlanManager:
             if m_ssid:
                 flush_current()
                 current_ssid = m_ssid.group(1).strip()
-                                current_frequency = ""
                 current_security = ""
+                current_frequency = ""
                 continue
 
             m_bssid = re.match(r"^BSSID\s+\d+\s*:\s*(.+)$", line, flags=re.IGNORECASE)
