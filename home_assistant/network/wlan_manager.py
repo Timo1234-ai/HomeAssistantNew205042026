@@ -921,20 +921,23 @@ class WlanManager:
 
     @staticmethod
     def _clean_networks(networks: list[WlanNetwork]) -> list[WlanNetwork]:
-        """Normalize discovered SSIDs: deduplicate and drop redacted placeholders."""
-        cleaned: list[WlanNetwork] = []
-        seen: set[tuple[str, str]] = set()
+        """Normalize discovered SSIDs and keep strongest AP per SSID."""
+        # Many routers expose the same SSID from multiple radios/BSSIDs.
+        # Keep only the strongest entry per SSID for a cleaner dashboard list.
+        best_by_ssid: dict[str, WlanNetwork] = {}
         for net in networks:
             ssid = (net.ssid or "").strip()
             if not ssid:
                 continue
             if "redacted" in ssid.lower() or ssid in {"<hidden>", "<unknown>"}:
                 continue
-            key = (ssid, (net.bssid or "").strip().lower())
-            if key in seen:
-                continue
-            seen.add(key)
-            cleaned.append(net)
+            key = ssid.lower()
+            current = best_by_ssid.get(key)
+            if current is None or (net.signal or 0) > (current.signal or 0):
+                best_by_ssid[key] = net
+
+        cleaned = list(best_by_ssid.values())
+        cleaned.sort(key=lambda n: (n.signal or 0), reverse=True)
         return cleaned
 
     @staticmethod
