@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
+from functools import wraps
 from typing import Any
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 
 from home_assistant.devices.plugin_manager import PluginManager
 from home_assistant.network.scanner import DeviceScanner
@@ -24,6 +25,44 @@ plugin_manager: PluginManager = PluginManager()
 # -----------------------------------------------------------------------
 # WLAN endpoints
 # -----------------------------------------------------------------------
+
+
+def _token_from_request() -> str:
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header.split(" ", 1)[1].strip()
+    return request.headers.get("X-API-Token", "").strip()
+
+
+def _is_authorized() -> bool:
+    if not current_app.config.get("HA_REQUIRE_AUTH", True):
+        return True
+    expected = str(current_app.config.get("HA_API_TOKEN", "")).strip()
+    if not expected:
+        return False
+    return _token_from_request() == expected
+
+
+def require_api_auth(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        if _is_authorized():
+            return func(*args, **kwargs)
+        if not current_app.config.get("HA_API_TOKEN"):
+            return jsonify({"ok": False, "error": "API auth enabled but token is not configured"}), 503
+        return jsonify({"ok": False, "error": "Unauthorized"}), 401
+
+    return wrapper
+
+
+def require_debug_or_auth(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        if current_app.debug or _is_authorized():
+            return func(*args, **kwargs)
+        return jsonify({"ok": False, "error": "Diagnostics require debug mode or valid token"}), 403
+
+    return wrapper
 
 @api.get("/wlan/status")
 def wlan_status() -> Any:
@@ -56,13 +95,21 @@ def wlan_networks() -> Any:
     ])
 
 
+@api.get("/wlan/availability")
+def wlan_availability() -> Any:
+    """Return lightweight readiness info for WLAN scanning on this host."""
+    return jsonify(wlan_manager.get_scan_availability())
+
+
 @api.get("/wlan/diagnostics")
+@require_debug_or_auth
 def wlan_diagnostics() -> Any:
     """Return WLAN diagnostic details for troubleshooting scan issues."""
     return jsonify(wlan_manager.get_diagnostics())
 
 
 @api.post("/wlan/connect")
+@require_api_auth
 def wlan_connect() -> Any:
     """Connect to a WLAN network."""
     data = request.get_json(force=True) or {}
@@ -79,6 +126,7 @@ def wlan_connect() -> Any:
 # -----------------------------------------------------------------------
 
 @api.get("/devices/scan")
+@require_api_auth
 def scan_devices() -> Any:
     """Trigger a network scan and return discovered devices."""
     network = request.args.get("network")
@@ -120,6 +168,7 @@ def device_capabilities(ip: str) -> Any:
 
 
 @api.post("/devices/<ip>/command")
+@require_api_auth
 def device_command(ip: str) -> Any:
     """Execute a command on a device."""
     devices = device_scanner.get_cached()
@@ -147,6 +196,7 @@ def list_plugins() -> Any:
 
 
 @api.post("/plugins/refresh")
+@require_api_auth
 def refresh_registry() -> Any:
     """Force-refresh the remote plugin registry."""
     registry = plugin_manager.fetch_remote_registry(force=True)

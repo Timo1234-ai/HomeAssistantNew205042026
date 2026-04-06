@@ -24,19 +24,36 @@ async function refreshWlanStatus() {
 async function loadNetworks() {
   const el = document.getElementById('network-list');
   el.innerHTML = '<span class="text-muted">Scanning…</span>';
+  // Check availability first to decide if demo banner is needed
+  let demoMode = false;
+  try {
+    const ar = await fetch(`${API}/api/wlan/availability`);
+    const availability = await ar.json();
+    demoMode = !!availability.demo;
+  } catch (_) {}
   try {
     const r = await fetch(`${API}/api/wlan/networks`);
     const nets = await r.json();
     if (!nets.length) {
-      el.innerHTML = '<p class="text-muted">No networks found.</p>';
+      el.innerHTML = `<p class="text-muted mb-0">No networks found.</p>
+        <div class="mt-2 small text-warning">
+          <div>No wireless interface or scan tools detected on this host.</div>
+          <div class="mt-1">Run this app on a host with Wi-Fi hardware to see nearby SSIDs.</div>
+          <div class="mt-1 text-info">Tip: set <code>HA_DEMO_MODE=1</code> to enable mock networks for UI testing.</div>
+        </div>`;
       return;
     }
-    el.innerHTML = nets.map(n => {
+    const demoBanner = demoMode
+      ? '<div class="alert alert-warning alert-sm py-1 px-2 mb-2 small">⚠️ Demo mode – these are mock networks (set <code>HA_DEMO_MODE=1</code>)</div>'
+      : '';
+    el.innerHTML = demoBanner + nets.map(n => {
       const pct = Math.min(100, Math.max(0, (n.signal || 0)));
+      const encodedSsid = encodeURIComponent(n.ssid || '');
+      const demoTag = n._demo ? ' <span class="badge bg-secondary ms-1" style="font-size:0.65em">DEMO</span>' : '';
       return `
-        <div class="network-row" onclick="selectNetwork('${escHtml(n.ssid)}')">
+        <div class="network-row" onclick="selectNetworkFromEncoded('${encodedSsid}')">
           <div class="flex-grow-1">
-            <span class="fw-semibold">${escHtml(n.ssid)}</span>
+            <span class="fw-semibold">${escHtml(n.ssid)}</span>${demoTag}
             <span class="text-muted small ms-2">${escHtml(n.security || 'Open')}</span>
           </div>
           <div class="d-flex align-items-center gap-2 me-3">
@@ -55,6 +72,10 @@ async function loadNetworks() {
 
 function selectNetwork(ssid) {
   document.getElementById('connect-ssid').value = ssid;
+}
+
+function selectNetworkFromEncoded(encodedSsid) {
+  selectNetwork(decodeURIComponent(encodedSsid));
 }
 
 async function connectWlan() {
@@ -83,6 +104,7 @@ async function connectWlan() {
 
 function showWlanModal() {
   new bootstrap.Modal(document.getElementById('wlanModal')).show();
+  loadNetworks();
 }
 
 // ── Device scanning ───────────────────────────────────────────
