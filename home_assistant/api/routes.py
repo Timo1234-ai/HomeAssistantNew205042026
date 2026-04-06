@@ -215,7 +215,8 @@ def scan_devices() -> Any:
             }), 400
         scan_context["subnet"] = network
 
-    devices = device_scanner.scan(network)
+    exclude = {local_ip_to_exclude} if local_ip_to_exclude else None
+    devices = device_scanner.scan(network, exclude_ips=exclude)
     if local_ip_to_exclude:
         devices = [d for d in devices if d.ip != local_ip_to_exclude]
     return jsonify({"devices": [d.to_dict() for d in devices], "scan_context": scan_context})

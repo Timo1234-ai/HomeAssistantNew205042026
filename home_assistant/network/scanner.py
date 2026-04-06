@@ -98,12 +98,14 @@ class DeviceScanner:
     # Public API
     # ------------------------------------------------------------------
 
-    def scan(self, network: Optional[str] = None) -> list[DiscoveredDevice]:
+    def scan(self, network: Optional[str] = None, exclude_ips: Optional[set] = None) -> list[DiscoveredDevice]:
         """Run a full scan and return discovered devices.
 
         Args:
             network: CIDR subnet to scan, e.g. ``"192.168.1.0/24"``.
                      Auto-detected if not provided.
+            exclude_ips: Optional set of IP strings to suppress from results
+                         (e.g. the host machine's own addresses).
         """
         if network is None:
             network = self._detect_network()
@@ -133,6 +135,8 @@ class DeviceScanner:
                 hosts.setdefault(ip, "")
 
         local_ips = self._local_ipv4s()
+        if exclude_ips:
+            local_ips |= exclude_ips
         devices = []
         threads = []
         for ip, mac in hosts.items():
