@@ -3,6 +3,7 @@
 const API = '';          // same origin
 let currentDeviceIp = null;
 let currentCapabilities = [];
+let selectedWlanSsid = null;   // SSID chosen by the user in the WLAN modal
 
 // ── WLAN ──────────────────────────────────────────────────────
 
@@ -14,6 +15,10 @@ async function refreshWlanStatus() {
     if (s.connected) {
       badge.className = 'badge badge-connected';
       badge.innerHTML = `<i class="bi bi-wifi"></i> ${escHtml(s.ssid)} · ${escHtml(s.ip_address)}`;
+      // Auto-select the connected SSID so scans default to that network.
+      if (!selectedWlanSsid) {
+        selectedWlanSsid = s.ssid;
+      }
     } else {
       badge.className = 'badge bg-secondary';
       badge.innerHTML = `<i class="bi bi-wifi-off"></i> Disconnected`;
@@ -72,6 +77,8 @@ async function loadNetworks() {
 
 function selectNetwork(ssid) {
   document.getElementById('connect-ssid').value = ssid;
+  selectedWlanSsid = ssid;
+  updateScanContextBadge();
 }
 
 function selectNetworkFromEncoded(encodedSsid) {
@@ -93,6 +100,8 @@ async function connectWlan() {
     const d = await r.json();
     if (d.ok) {
       resultEl.innerHTML = '<span class="text-success"><i class="bi bi-check-circle"></i> Connected!</span>';
+      selectedWlanSsid = ssid;
+      updateScanContextBadge();
       refreshWlanStatus();
     } else {
       resultEl.innerHTML = `<span class="text-danger">Failed: ${escHtml(d.error || 'unknown error')}</span>`;
@@ -109,6 +118,18 @@ function showWlanModal() {
 
 // ── Device scanning ───────────────────────────────────────────
 
+function updateScanContextBadge() {
+  const el = document.getElementById('scan-context');
+  if (!el) return;
+  if (selectedWlanSsid) {
+    el.innerHTML = `<span class="badge bg-info text-dark"><i class="bi bi-wifi"></i> ${escHtml(selectedWlanSsid)}</span>`;
+    el.title = `Scan will target the subnet of WLAN: ${selectedWlanSsid}`;
+  } else {
+    el.innerHTML = '';
+    el.title = '';
+  }
+}
+
 async function scanDevices() {
   const btn      = document.getElementById('scan-btn');
   const statusEl = document.getElementById('scan-status');
@@ -116,13 +137,41 @@ async function scanDevices() {
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner-pulse"><i class="bi bi-radar"></i></span> Scanning…';
   statusEl.textContent = '';
+  const ctxEl = document.getElementById('scan-context-info');
+  if (ctxEl) ctxEl.innerHTML = '';
   try {
-    const url = network ? `${API}/api/devices/scan?network=${encodeURIComponent(network)}`
-                        : `${API}/api/devices/scan`;
+    let url = `${API}/api/devices/scan`;
+    const params = new URLSearchParams();
+    if (network) {
+      params.set('network', network);
+    } else if (selectedWlanSsid) {
+      params.set('wlan', selectedWlanSsid);
+    }
+    if ([...params].length) url += '?' + params.toString();
+
     const r = await fetch(url);
-    const devices = await r.json();
+    const body = await r.json();
+
+    if (!r.ok) {
+      // Structured error from WLAN-scoped scan (e.g. not connected)
+      statusEl.innerHTML = `<span class="text-danger"><i class="bi bi-exclamation-triangle"></i> ${escHtml(body.error || 'Scan failed')}</span>`;
+      return;
+    }
+
+    // Response is {devices: [...], scan_context: {...}}
+    const devices = body.devices ?? [];
+    const ctx = body.scan_context ?? {};
     renderDevices(devices);
     statusEl.textContent = `Found ${devices.length} device(s).`;
+
+    // Show resolved scan context (subnet / interface used)
+    if (ctxEl && (ctx.ssid || ctx.subnet || ctx.interface)) {
+      const parts = [];
+      if (ctx.ssid)      parts.push(`<i class="bi bi-wifi"></i> <strong>${escHtml(ctx.ssid)}</strong>`);
+      if (ctx.subnet)    parts.push(`subnet: <code>${escHtml(ctx.subnet)}</code>`);
+      if (ctx.interface) parts.push(`interface: <code>${escHtml(ctx.interface)}</code>`);
+      ctxEl.innerHTML = `<span class="text-info small">${parts.join(' · ')}</span>`;
+    }
   } catch (e) {
     statusEl.textContent = `Error: ${e.message}`;
   } finally {

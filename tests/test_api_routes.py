@@ -104,9 +104,78 @@ class TestDeviceRoutes:
             mock_sc.scan.return_value = [dev]
             r = client.get("/api/devices/scan")
         assert r.status_code == 200
-        data = r.get_json()
+        body = r.get_json()
+        assert "devices" in body
+        assert "scan_context" in body
+        data = body["devices"]
         assert len(data) == 1
         assert data[0]["ip"] == "192.168.1.50"
+
+    def test_scan_devices_with_explicit_network(self, client):
+        dev = self._make_device()
+        with patch("home_assistant.api.routes.device_scanner") as mock_sc:
+            mock_sc.scan.return_value = [dev]
+            r = client.get("/api/devices/scan?network=10.0.0.0/24")
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["scan_context"]["subnet"] == "10.0.0.0/24"
+        mock_sc.scan.assert_called_once_with("10.0.0.0/24")
+
+    def test_scan_devices_wlan_resolves_subnet(self, client):
+        dev = self._make_device()
+        status = WlanStatus(
+            connected=True, ssid="HomeNet", ip_address="192.168.1.10",
+            interface="wlan0", signal=75,
+        )
+        with patch("home_assistant.api.routes.wlan_manager") as mock_wm:
+            mock_wm.get_status.return_value = status
+            mock_wm.get_subnet.return_value = "192.168.1.0/24"
+            with patch("home_assistant.api.routes.device_scanner") as mock_sc:
+                mock_sc.scan.return_value = [dev]
+                r = client.get("/api/devices/scan?wlan=HomeNet")
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["scan_context"]["ssid"] == "HomeNet"
+        assert body["scan_context"]["subnet"] == "192.168.1.0/24"
+        assert body["scan_context"]["interface"] == "wlan0"
+        mock_sc.scan.assert_called_once_with("192.168.1.0/24")
+
+    def test_scan_devices_wlan_not_connected(self, client):
+        status = WlanStatus(connected=False)
+        with patch("home_assistant.api.routes.wlan_manager") as mock_wm:
+            mock_wm.get_status.return_value = status
+            r = client.get("/api/devices/scan?wlan=HomeNet")
+        assert r.status_code == 409
+        body = r.get_json()
+        assert body["ok"] is False
+        assert "HomeNet" in body["error"]
+
+    def test_scan_devices_wlan_ssid_mismatch(self, client):
+        status = WlanStatus(
+            connected=True, ssid="OtherNet", ip_address="192.168.2.5",
+            interface="wlan0",
+        )
+        with patch("home_assistant.api.routes.wlan_manager") as mock_wm:
+            mock_wm.get_status.return_value = status
+            r = client.get("/api/devices/scan?wlan=HomeNet")
+        assert r.status_code == 409
+        body = r.get_json()
+        assert body["ok"] is False
+        assert "OtherNet" in body["error"]
+        assert "HomeNet" in body["error"]
+
+    def test_scan_devices_wlan_subnet_unresolvable(self, client):
+        status = WlanStatus(
+            connected=True, ssid="HomeNet", ip_address="192.168.1.10",
+            interface="wlan0",
+        )
+        with patch("home_assistant.api.routes.wlan_manager") as mock_wm:
+            mock_wm.get_status.return_value = status
+            mock_wm.get_subnet.return_value = None
+            r = client.get("/api/devices/scan?wlan=HomeNet")
+        assert r.status_code == 500
+        body = r.get_json()
+        assert body["ok"] is False
 
     def test_list_devices_empty(self, client):
         with patch("home_assistant.api.routes.device_scanner") as mock_sc:

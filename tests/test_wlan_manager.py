@@ -60,6 +60,72 @@ class TestWlanManagerStatus:
         assert ip == ""
 
 
+class TestWlanManagerGetSubnet:
+    def test_get_subnet_returns_none_when_not_connected(self):
+        wm = WlanManager(interface="wlan0")
+        with patch.object(wm, "get_status", return_value=WlanStatus(connected=False)):
+            result = wm.get_subnet()
+        assert result is None
+
+    def test_get_subnet_linux_uses_ip_route(self):
+        wm = WlanManager(interface="wlan0")
+        status = WlanStatus(
+            connected=True, ssid="HomeNet", ip_address="192.168.1.42",
+            interface="wlan0",
+        )
+        ip_route_output = (
+            "192.168.1.0/24 dev wlan0 proto kernel scope link src 192.168.1.42 metric 600\n"
+        )
+        with patch.object(wm, "get_status", return_value=status):
+            with patch("platform.system", return_value="Linux"):
+                with patch("subprocess.check_output", return_value=ip_route_output):
+                    result = wm.get_subnet()
+        assert result == "192.168.1.0/24"
+
+    def test_get_subnet_linux_skips_default_route(self):
+        wm = WlanManager(interface="wlan0")
+        status = WlanStatus(
+            connected=True, ssid="HomeNet", ip_address="192.168.1.42",
+            interface="wlan0",
+        )
+        # Only a default route present – should fall back to ip_hint /24
+        ip_route_output = "default via 192.168.1.1 dev wlan0\n"
+        with patch.object(wm, "get_status", return_value=status):
+            with patch("platform.system", return_value="Linux"):
+                with patch("subprocess.check_output", return_value=ip_route_output):
+                    result = wm.get_subnet()
+        assert result == "192.168.1.0/24"
+
+    def test_get_subnet_fallback_to_ip_hint(self):
+        wm = WlanManager(interface="wlan0")
+        status = WlanStatus(
+            connected=True, ssid="HomeNet", ip_address="10.0.0.5",
+            interface="wlan0",
+        )
+        with patch.object(wm, "get_status", return_value=status):
+            with patch("platform.system", return_value="Linux"):
+                with patch("subprocess.check_output", side_effect=Exception("no ip")):
+                    result = wm.get_subnet()
+        assert result == "10.0.0.0/24"
+
+    def test_subnet_for_interface_macos(self):
+        wm = WlanManager(interface="en0")
+        ifconfig_output = (
+            "en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n"
+            "    inet 192.168.1.42 netmask 0xffffff00 broadcast 192.168.1.255\n"
+        )
+        with patch("platform.system", return_value="Darwin"):
+            with patch("subprocess.check_output", return_value=ifconfig_output):
+                result = wm._subnet_for_interface("en0")
+        assert result == "192.168.1.0/24"
+
+    def test_subnet_for_interface_no_interface_falls_back(self):
+        wm = WlanManager(interface="")
+        with patch("platform.system", return_value="Linux"):
+            result = wm._subnet_for_interface("", ip_hint="172.16.0.5")
+        assert result == "172.16.0.0/24"
+
+
 class TestWlanManagerScan:
     def test_nmcli_scan_parses_networks(self):
         # nmcli -t escapes colons in MAC as \:

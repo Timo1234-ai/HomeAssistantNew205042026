@@ -132,10 +132,59 @@ def wlan_connect() -> Any:
 @api.get("/devices/scan")
 @require_api_auth
 def scan_devices() -> Any:
-    """Trigger a network scan and return discovered devices."""
-    network = request.args.get("network")
-    devices = device_scanner.scan(network or None)
-    return jsonify([d.to_dict() for d in devices])
+    """Trigger a network scan and return discovered devices.
+
+    Optional query parameters:
+
+    * ``network`` – explicit CIDR subnet, e.g. ``192.168.1.0/24``.
+    * ``wlan`` – SSID of the currently connected WLAN.  When supplied the
+      endpoint resolves the subnet from the active WLAN connection and uses
+      it for the scan, returning the resolved context alongside the results.
+      Returns an error if the host is not connected to the requested SSID.
+    """
+    network: Optional[str] = request.args.get("network") or None
+    ssid: Optional[str] = request.args.get("wlan") or None
+
+    scan_context: dict[str, Any] = {}
+
+    if ssid and network is None:
+        status = wlan_manager.get_status()
+        if not status.connected:
+            return jsonify({
+                "ok": False,
+                "error": (
+                    f"Not connected to any WLAN. "
+                    f"Connect to '{ssid}' first before scanning."
+                ),
+            }), 409
+        if status.ssid != ssid:
+            return jsonify({
+                "ok": False,
+                "error": (
+                    f"Currently connected to '{status.ssid}', not '{ssid}'. "
+                    f"Connect to '{ssid}' first before scanning."
+                ),
+            }), 409
+        subnet = wlan_manager.get_subnet()
+        if not subnet:
+            return jsonify({
+                "ok": False,
+                "error": (
+                    f"Could not determine subnet for WLAN '{ssid}' "
+                    f"(interface: {status.interface or 'unknown'})."
+                ),
+            }), 500
+        network = subnet
+        scan_context = {
+            "ssid": ssid,
+            "interface": status.interface,
+            "subnet": subnet,
+        }
+    elif network:
+        scan_context["subnet"] = network
+
+    devices = device_scanner.scan(network)
+    return jsonify({"devices": [d.to_dict() for d in devices], "scan_context": scan_context})
 
 
 @api.get("/devices")
