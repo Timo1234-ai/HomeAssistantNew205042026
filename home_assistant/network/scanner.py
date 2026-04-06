@@ -112,10 +112,32 @@ class DeviceScanner:
         hosts = self._arp_scan(network)
         if not hosts:
             hosts = self._ping_sweep(network)
+        elif len(hosts) <= 4:
+            # ARP can be sparse on Windows and only include recently contacted hosts.
+            # Augment with ping sweep to discover additional active peers.
+            ping_hosts = self._ping_sweep(network)
+            for ip in ping_hosts:
+                hosts.setdefault(ip, "")
 
+        # Try nmap host discovery when low-visibility networks only reveal gateway.
+        if len(hosts) <= 1:
+            nmap_hosts = self._nmap_sweep(network)
+            for ip in nmap_hosts:
+                hosts.setdefault(ip, "")
+
+        # Some networks expose very little ARP/ICMP visibility (often only the gateway).
+        # Augment with a lightweight TCP sweep to find devices with open common ports.
+        if len(hosts) <= 1:
+            tcp_hosts = self._tcp_sweep(network)
+            for ip in tcp_hosts:
+                hosts.setdefault(ip, "")
+
+        local_ips = self._local_ipv4s()
         devices = []
         threads = []
         for ip, mac in hosts.items():
+            if ip in local_ips:
+                continue
             dev = DiscoveredDevice(ip=ip, mac=mac)
             dev.hostname = self._resolve_hostname(ip)
             dev.vendor = lookup_vendor(mac)
@@ -190,6 +212,29 @@ class DeviceScanner:
             pass
 
         return "192.168.1.0/24"
+
+    @staticmethod
+    def _local_ipv4s() -> set[str]:
+        """Return local host IPv4 addresses to avoid self-discovery noise."""
+        ips: set[str] = set()
+
+        try:
+            ips.update(socket.gethostbyname_ex(socket.gethostname())[2])
+        except Exception:
+            pass
+
+        try:
+            # Best-effort active route source IP.
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("8.8.8.8", 80))
+                ips.add(s.getsockname()[0])
+            finally:
+                s.close()
+        except Exception:
+            pass
+
+        return {ip for ip in ips if ip and not ip.startswith("127.")}
 
     @staticmethod
     def _network_from_ipconfig(output: str) -> Optional[str]:
@@ -357,6 +402,80 @@ class DeviceScanner:
 
         for t in threads:
             t.join(timeout=3)
+        return hosts
+
+    @staticmethod
+    def _nmap_sweep(network: str) -> dict[str, str]:
+        """Use nmap (if installed) to discover live hosts."""
+        hosts: dict[str, str] = {}
+        try:
+            import nmap  # type: ignore
+
+            scanner = nmap.PortScanner()
+
+            # Fast ping discovery first.
+            scanner.scan(hosts=network, arguments="-sn -n")
+            for ip in scanner.all_hosts():
+                try:
+                    if scanner[ip].state() == "up":
+                        hosts[ip] = ""
+                except Exception:
+                    continue
+            if hosts:
+                return hosts
+
+            # Fallback for hosts that block ICMP/ping.
+            scanner.scan(
+                hosts=network,
+                arguments=(
+                    "-Pn -n --open -p 80,443,554,8080,8008,8009,1883,8883,8123 "
+                    "--max-retries 1 --host-timeout 700ms"
+                ),
+            )
+            for ip in scanner.all_hosts():
+                try:
+                    if scanner[ip].state() == "up":
+                        hosts[ip] = ""
+                except Exception:
+                    continue
+        except Exception as exc:
+            logger.debug("nmap sweep failed: %s", exc)
+        return hosts
+
+    @staticmethod
+    def _tcp_sweep(network: str) -> dict[str, str]:
+        """Probe common TCP ports and return hosts with at least one open port."""
+        hosts: dict[str, str] = {}
+        try:
+            net = ipaddress.IPv4Network(network, strict=False)
+        except ValueError:
+            return hosts
+
+        ports = [
+            80, 443, 554, 1400, 1883, 8080, 8123, 8883, 49153,
+        ]
+        connect_timeout = 0.25
+        threads = []
+
+        def _probe_ip(ip: str) -> None:
+            for port in ports:
+                try:
+                    with socket.create_connection((ip, port), timeout=connect_timeout):
+                        hosts[ip] = ""
+                        return
+                except OSError:
+                    continue
+
+        for addr in net.hosts():
+            t = threading.Thread(target=_probe_ip, args=(str(addr),), daemon=True)
+            threads.append(t)
+            t.start()
+            if len(threads) % 40 == 0:
+                for t2 in threads[-40:]:
+                    t2.join(timeout=2)
+
+        for t in threads:
+            t.join(timeout=2)
         return hosts
 
     # ------------------------------------------------------------------

@@ -163,7 +163,11 @@ async function scanDevices() {
     const devices = Array.isArray(body.devices) ? body.devices : [];
     const ctx = body.scan_context || {};
     renderDevices(devices);
-    statusEl.textContent = `Found ${devices.length} device(s).`;
+    if (likelyGatewayOnlyResult(devices)) {
+      statusEl.textContent = 'Found 1 device (likely your router). Containerized environments can limit LAN discovery.';
+    } else {
+      statusEl.textContent = `Found ${devices.length} device(s).`;
+    }
 
     // Show resolved scan context (subnet / interface used)
     if (ctxEl && (ctx.ssid || ctx.subnet || ctx.interface)) {
@@ -205,6 +209,22 @@ function renderDevices(devices) {
   }, { once: false });
 }
 
+function likelyGatewayOnlyResult(devices) {
+  if (!Array.isArray(devices) || devices.length !== 1) {
+    return false;
+  }
+  const d = devices[0] || {};
+  const ip = String(d.ip || '');
+  const octets = ip.split('.');
+  const lastOctet = parseInt(octets[octets.length - 1], 10);
+  const isGatewayLikeIp = Number.isInteger(lastOctet) && (lastOctet === 1 || lastOctet === 254);
+  const plugin = String(d.plugin_id || '');
+  const services = Array.isArray(d.services) ? d.services : [];
+  const genericLike = plugin === 'generic_http' || plugin === 'generic';
+  const gatewayLikeServices = services.includes('http') || services.includes('https');
+  return isGatewayLikeIp && genericLike && gatewayLikeServices;
+}
+
 function deviceCard(d) {
   const iconMap = {
     philips_hue:   'bi-lightbulb',
@@ -220,6 +240,8 @@ function deviceCard(d) {
   };
   const icon = iconMap[d.plugin_id] || 'bi-cpu';
   const services = (d.services || []).slice(0, 3).join(', ');
+  const hasDistinctHostname = !!d.hostname && d.hostname !== d.ip;
+  const title = hasDistinctHostname ? d.hostname : (d.vendor || d.device_type || 'Unknown device');
 
   return `
     <div class="col-6 col-sm-4 col-md-3 col-xl-2">
@@ -227,8 +249,8 @@ function deviceCard(d) {
            data-device-ip="${escHtml(d.ip)}"
            data-device-type="${escHtml(d.device_type)}">
         <div class="device-icon mb-2"><i class="bi ${icon}"></i></div>
-        <div class="fw-semibold small text-truncate" title="${escHtml(d.hostname || d.ip)}">
-          ${escHtml(d.hostname || d.ip)}
+        <div class="fw-semibold small text-truncate" title="${escHtml(title)}">
+          ${escHtml(title)}
         </div>
         <div class="text-muted" style="font-size:0.72rem">${escHtml(d.ip)}</div>
         <div class="mt-1">

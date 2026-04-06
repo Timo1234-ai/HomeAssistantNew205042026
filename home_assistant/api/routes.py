@@ -164,6 +164,7 @@ def scan_devices() -> Any:
         network = None
 
     scan_context: dict[str, Any] = {}
+    local_ip_to_exclude: str | None = None
 
     if ssid:
         status = wlan_manager.get_status()
@@ -198,6 +199,7 @@ def scan_devices() -> Any:
             }), 500
 
         network = subnet
+        local_ip_to_exclude = status.ip_address or None
         scan_context = {
             "ssid": status.ssid,
             "interface": status.interface,
@@ -214,6 +216,8 @@ def scan_devices() -> Any:
         scan_context["subnet"] = network
 
     devices = device_scanner.scan(network)
+    if local_ip_to_exclude:
+        devices = [d for d in devices if d.ip != local_ip_to_exclude]
     return jsonify({"devices": [d.to_dict() for d in devices], "scan_context": scan_context})
 
 
