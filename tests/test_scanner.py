@@ -95,8 +95,36 @@ class TestDeviceScannerArp:
 
     def test_detect_network_fallback(self):
         with patch("subprocess.check_output", side_effect=Exception("ip not found")):
-            network = DeviceScanner._detect_network()
+            with patch("socket.socket", side_effect=Exception("no socket")):
+                network = DeviceScanner._detect_network()
         assert network == "192.168.1.0/24"
+
+    def test_network_from_ipconfig_parses_prefix(self):
+        ipconfig = (
+            "Windows IP Configuration\n\n"
+            "Wireless LAN adapter Wi-Fi:\n"
+            "   IPv4 Address. . . . . . . . . . . : 192.168.68.129\n"
+            "   Subnet Mask . . . . . . . . . . . : 255.255.255.0\n"
+            "   Default Gateway . . . . . . . . . : 192.168.68.1\n"
+        )
+        network = DeviceScanner._network_from_ipconfig(ipconfig)
+        assert network == "192.168.68.0/24"
+
+    def test_network_from_ipconfig_returns_none_when_missing(self):
+        network = DeviceScanner._network_from_ipconfig("Windows IP Configuration\n")
+        assert network is None
+
+    def test_detect_network_uses_windows_ipconfig(self):
+        ipconfig = (
+            "Windows IP Configuration\n\n"
+            "Wireless LAN adapter Wi-Fi:\n"
+            "   IPv4 Address. . . . . . . . . . . : 192.168.68.129\n"
+            "   Subnet Mask . . . . . . . . . . . : 255.255.255.0\n"
+        )
+        with patch("platform.system", return_value="Windows"):
+            with patch("subprocess.check_output", return_value=ipconfig):
+                network = DeviceScanner._detect_network()
+        assert network == "192.168.68.0/24"
 
     def test_get_cached_returns_list(self):
         sc = DeviceScanner()

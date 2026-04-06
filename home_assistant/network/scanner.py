@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import platform
 import re
 import socket
 import subprocess
@@ -146,19 +147,81 @@ class DeviceScanner:
 
     @staticmethod
     def _detect_network() -> str:
-        """Detect the local subnet from routing table."""
+        """Detect the local subnet from host networking information."""
+        system = platform.system()
+
+        if system == "Linux":
+            try:
+                out = subprocess.check_output(["ip", "route"], text=True, timeout=5)
+                for line in out.splitlines():
+                    if "src" in line and not line.startswith("default"):
+                        parts = line.split()
+                        if "/" in parts[0]:
+                            return parts[0]
+            except Exception:
+                pass
+
+        if system == "Windows":
+            try:
+                out = subprocess.check_output(["ipconfig"], text=True, timeout=8)
+                network = DeviceScanner._network_from_ipconfig(out)
+                if network:
+                    return network
+            except Exception:
+                pass
+
+        # Cross-platform fallback: derive subnet from the active local IPv4.
         try:
-            out = subprocess.check_output(
-                ["ip", "route"], text=True, timeout=5
-            )
-            for line in out.splitlines():
-                if "src" in line and not line.startswith("default"):
-                    parts = line.split()
-                    if "/" in parts[0]:
-                        return parts[0]
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("8.8.8.8", 80))
+                local_ip = s.getsockname()[0]
+            finally:
+                s.close()
+
+            if local_ip and not local_ip.startswith("127."):
+                net = ipaddress.IPv4Network(f"{local_ip}/24", strict=False)
+                return f"{net.network_address}/{net.prefixlen}"
         except Exception:
             pass
+
         return "192.168.1.0/24"
+
+    @staticmethod
+    def _network_from_ipconfig(output: str) -> Optional[str]:
+        """Extract active IPv4 network from Windows ipconfig output."""
+        blocks = re.split(r"\r?\n\r?\n+", output)
+        for block in blocks:
+            lines = [line.strip() for line in block.splitlines() if line.strip()]
+            if not lines:
+                continue
+
+            # Pick a plausible host IPv4 from this adapter block.
+            ip_match = re.search(
+                r"\b(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b",
+                block,
+            )
+            if not ip_match:
+                continue
+            host_ip = ip_match.group(1)
+            if host_ip.startswith("169.254."):
+                continue
+
+            mask_match = re.search(r"\b(255(?:\.\d{1,3}){3})\b", block)
+            if mask_match:
+                try:
+                    net = ipaddress.IPv4Network(f"{host_ip}/{mask_match.group(1)}", strict=False)
+                    return f"{net.network_address}/{net.prefixlen}"
+                except Exception:
+                    continue
+
+            # If mask is unavailable in this locale/output, assume /24.
+            try:
+                net = ipaddress.IPv4Network(f"{host_ip}/24", strict=False)
+                return f"{net.network_address}/{net.prefixlen}"
+            except Exception:
+                continue
+        return None
 
     @staticmethod
     def _arp_scan(network: str) -> dict[str, str]:
