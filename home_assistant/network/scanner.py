@@ -225,7 +225,7 @@ class DeviceScanner:
 
     @staticmethod
     def _arp_scan(network: str) -> dict[str, str]:
-        """Return {ip: mac} using arp-scan or /proc/net/arp fallback."""
+        """Return {ip: mac} using ARP table and platform-specific fallbacks."""
         hosts: dict[str, str] = {}
 
         # Try scapy first
@@ -257,6 +257,32 @@ class DeviceScanner:
         except Exception as exc:
             logger.debug("arp-scan failed: %s", exc)
 
+        # Windows fallback: parse `arp -a` table.
+        if platform.system() == "Windows":
+            try:
+                out = subprocess.check_output(
+                    ["arp", "-a"],
+                    text=True,
+                    timeout=8,
+                    encoding="utf-8",
+                    errors="ignore",
+                )
+                for line in out.splitlines():
+                    m = re.search(r"(\d+\.\d+\.\d+\.\d+)\s+([\da-fA-F\-]{17})\s+", line)
+                    if not m:
+                        continue
+                    ip = m.group(1)
+                    mac = m.group(2).replace("-", ":").lower()
+                    try:
+                        if ipaddress.ip_address(ip) in ipaddress.ip_network(network, strict=False):
+                            hosts[ip] = mac
+                    except ValueError:
+                        continue
+                if hosts:
+                    return hosts
+            except Exception as exc:
+                logger.debug("arp -a parse failed: %s", exc)
+
         # Fallback: read /proc/net/arp (only shows already-contacted hosts)
         try:
             with open("/proc/net/arp") as fh:
@@ -278,12 +304,17 @@ class DeviceScanner:
         except ValueError:
             return hosts
 
+        is_windows = platform.system() == "Windows"
+
         threads = []
 
         def _ping(ip: str) -> None:
             try:
+                cmd = ["ping", "-c", "1", "-W", "1", ip]
+                if is_windows:
+                    cmd = ["ping", "-n", "1", "-w", "1000", ip]
                 result = subprocess.run(
-                    ["ping", "-c", "1", "-W", "1", ip],
+                    cmd,
                     capture_output=True, timeout=3
                 )
                 if result.returncode == 0:

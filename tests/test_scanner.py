@@ -130,6 +130,42 @@ class TestDeviceScannerArp:
         sc = DeviceScanner()
         assert isinstance(sc.get_cached(), list)
 
+    def test_arp_scan_windows_uses_arp_table(self):
+        arp_output = (
+            "Interface: 192.168.68.129 --- 0x10\n"
+            "  Internet Address      Physical Address      Type\n"
+            "  192.168.68.1          aa-bb-cc-dd-ee-ff     dynamic\n"
+            "  192.168.68.55         11-22-33-44-55-66     dynamic\n"
+        )
+
+        def _check_output(cmd, **kwargs):
+            if cmd[:2] == ["arp", "-a"]:
+                return arp_output
+            raise Exception("unavailable")
+
+        with patch("platform.system", return_value="Windows"):
+            with patch("subprocess.check_output", side_effect=_check_output):
+                hosts = DeviceScanner._arp_scan("192.168.68.0/24")
+
+        assert hosts.get("192.168.68.1") == "aa:bb:cc:dd:ee:ff"
+        assert hosts.get("192.168.68.55") == "11:22:33:44:55:66"
+
+    def test_ping_sweep_windows_uses_windows_ping_flags(self):
+        seen = []
+
+        def _run(cmd, **kwargs):
+            seen.append(cmd)
+            class R:
+                returncode = 1
+            return R()
+
+        with patch("platform.system", return_value="Windows"):
+            with patch("subprocess.run", side_effect=_run):
+                DeviceScanner._ping_sweep("192.168.68.0/30")
+
+        assert seen
+        assert seen[0][:5] == ["ping", "-n", "1", "-w", "1000"]
+
 
 class TestLookupVendor:
     def test_empty_mac_returns_empty(self):
