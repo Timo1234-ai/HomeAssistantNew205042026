@@ -639,9 +639,22 @@ class WlanManager:
                 )
                 if add_result.returncode != 0:
                     err = (add_result.stderr or add_result.stdout or "").strip()
-                    self._set_connect_error(err or f"Failed to add Wi-Fi profile for {ssid}")
-                    logger.error("Failed to add Wi-Fi profile for %s: %s", ssid, self._last_connect_error)
-                    return False
+                    err_l = err.lower()
+                    # Group policy / different user-scope profiles cannot be overwritten.
+                    # In that case, continue and attempt a normal connect with existing profile.
+                    if (
+                        "cannot be overwritten" in err_l
+                        or "different user scope" in err_l
+                        or "group policy" in err_l
+                    ):
+                        logger.warning(
+                            "Wi-Fi profile for %s cannot be overwritten; attempting connect with existing profile",
+                            ssid,
+                        )
+                    else:
+                        self._set_connect_error(err or f"Failed to add Wi-Fi profile for {ssid}")
+                        logger.error("Failed to add Wi-Fi profile for %s: %s", ssid, self._last_connect_error)
+                        return False
             finally:
                 try:
                     os.unlink(temp_file.name)
