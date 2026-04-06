@@ -242,6 +242,8 @@ function deviceCard(d) {
   const services = (d.services || []).slice(0, 3).join(', ');
   const hasDistinctHostname = !!d.hostname && d.hostname !== d.ip;
   const title = hasDistinctHostname ? d.hostname : (d.vendor || d.device_type || 'Unknown device');
+  // Only show the type badge when it adds info beyond the title
+  const showTypeBadge = title !== d.device_type && d.device_type && d.device_type !== 'Unknown Device';
 
   return `
     <div class="col-6 col-sm-4 col-md-3 col-xl-2">
@@ -253,12 +255,12 @@ function deviceCard(d) {
           ${escHtml(title)}
         </div>
         <div class="text-muted" style="font-size:0.72rem">${escHtml(d.ip)}</div>
-        <div class="mt-1">
+        ${showTypeBadge ? `<div class="mt-1">
           <span class="badge bg-indigo device-type-badge"
                 style="background:#6366f1!important">
             ${escHtml(d.device_type)}
           </span>
-        </div>
+        </div>` : ''}
         ${d.vendor ? `<div class="text-muted mt-1" style="font-size:0.7rem">${escHtml(d.vendor)}</div>` : ''}
         ${services ? `<div class="text-muted mt-1" style="font-size:0.68rem">${escHtml(services)}</div>` : ''}
       </div>
