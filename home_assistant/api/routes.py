@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import hmac
+import re
 from functools import wraps
 from typing import Any
 
@@ -31,6 +33,20 @@ limiter = Limiter(
     storage_uri="memory://",
 )
 
+# Compiled pattern for validating IPv4 addresses in URL path parameters.
+_IPV4_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
+
+
+def _is_valid_ipv4(value: str) -> bool:
+    """Return True only if *value* is a well-formed, routable IPv4 address."""
+    if not _IPV4_RE.match(value):
+        return False
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
 
 # -----------------------------------------------------------------------
 # WLAN endpoints
@@ -50,7 +66,11 @@ def _is_authorized() -> bool:
     expected = str(current_app.config.get("HA_API_TOKEN", "")).strip()
     if not expected:
         return False
-    return _token_from_request() == expected
+    # Use a constant-time comparison to prevent timing-based token enumeration.
+    return hmac.compare_digest(
+        _token_from_request().encode("utf-8"),
+        expected.encode("utf-8"),
+    )
 
 
 def require_api_auth(func):
@@ -75,6 +95,7 @@ def require_debug_or_auth(func):
     return wrapper
 
 @api.get("/wlan/status")
+@limiter.limit("60 per minute")
 def wlan_status() -> Any:
     """Return current WLAN connection status."""
     status = wlan_manager.get_status()
@@ -89,6 +110,7 @@ def wlan_status() -> Any:
 
 
 @api.get("/wlan/networks")
+@limiter.limit("10 per minute")
 def wlan_networks() -> Any:
     """Return list of available WLAN networks."""
     networks = wlan_manager.scan_networks()
@@ -237,6 +259,8 @@ def list_devices() -> Any:
 @api.get("/devices/<ip>/state")
 def device_state(ip: str) -> Any:
     """Return current state of a device."""
+    if not _is_valid_ipv4(ip):
+        return jsonify({"error": "Invalid IP address"}), 400
     devices = device_scanner.get_cached()
     dev = next((d for d in devices if d.ip == ip), None)
     if dev is None:
@@ -248,6 +272,8 @@ def device_state(ip: str) -> Any:
 @api.get("/devices/<ip>/capabilities")
 def device_capabilities(ip: str) -> Any:
     """Return supported commands for a device."""
+    if not _is_valid_ipv4(ip):
+        return jsonify({"error": "Invalid IP address"}), 400
     devices = device_scanner.get_cached()
     dev = next((d for d in devices if d.ip == ip), None)
     if dev is None:
@@ -260,6 +286,8 @@ def device_capabilities(ip: str) -> Any:
 @require_api_auth
 def device_command(ip: str) -> Any:
     """Execute a command on a device."""
+    if not _is_valid_ipv4(ip):
+        return jsonify({"error": "Invalid IP address"}), 400
     devices = device_scanner.get_cached()
     dev = next((d for d in devices if d.ip == ip), None)
     if dev is None:

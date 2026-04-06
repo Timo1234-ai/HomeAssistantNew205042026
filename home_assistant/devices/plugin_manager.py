@@ -14,6 +14,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -26,6 +27,18 @@ logger = logging.getLogger(__name__)
 
 # URL of the remote plugin registry (JSON manifest)
 # The actual registry URL is built in _remote_registry_url() below.
+
+# Only plugin_ids consisting of lowercase letters, digits and underscores
+# are accepted. This prevents path traversal in the cache directory
+# (e.g. "../../evil" would be rejected).
+_PLUGIN_ID_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+
+# Remote plugin source code may only be downloaded from these URL prefixes.
+# This prevents the registry (or HA_PLUGIN_REGISTRY_URL) from redirecting
+# downloads to an attacker-controlled host and executing arbitrary code.
+_ALLOWED_PLUGIN_URL_PREFIXES: tuple[str, ...] = (
+    "https://raw.githubusercontent.com/Timo1234-ai/HomeAssistantNew205042026/",
+)
 
 # Fallback built-in plugin registry (plugin_id → module path inside package)
 BUILTIN_PLUGINS: dict[str, str] = {
@@ -99,6 +112,9 @@ class PluginManager:
 
     def get_plugin_class(self, plugin_id: str) -> type[DevicePlugin]:
         """Return plugin class for *plugin_id*, fetching it if necessary."""
+        if not _PLUGIN_ID_RE.match(plugin_id):
+            logger.warning("Rejected unsafe plugin_id %r", plugin_id)
+            return DevicePlugin
         if plugin_id not in self._plugins:
             self._try_load_remote(plugin_id)
         return self._plugins.get(plugin_id, DevicePlugin)
@@ -168,6 +184,10 @@ class PluginManager:
 
     def _try_load_remote(self, plugin_id: str) -> None:
         """Try to download and load a plugin from the remote registry."""
+        if not _PLUGIN_ID_RE.match(plugin_id):
+            logger.warning("Rejected unsafe plugin_id in _try_load_remote: %r", plugin_id)
+            return
+
         # Check cached file first
         cached = self.cache_dir / f"{plugin_id}.py"
         if cached.exists():
@@ -184,6 +204,15 @@ class PluginManager:
         meta = registry[plugin_id]
         url = meta.get("url")
         if not url:
+            return
+
+        # Enforce allowlist: only download code from trusted origins.
+        if not any(url.startswith(prefix) for prefix in _ALLOWED_PLUGIN_URL_PREFIXES):
+            logger.error(
+                "Refused to download plugin '%s' from untrusted URL: %s",
+                plugin_id,
+                url,
+            )
             return
 
         try:

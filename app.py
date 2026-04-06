@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 
-from flask import Flask, render_template
+from flask import Flask, render_template, Response
 from flask_cors import CORS
 
 from home_assistant.api.routes import api, device_scanner, plugin_manager, wlan_manager
@@ -34,6 +34,8 @@ def create_app(config: dict | None = None) -> Flask:
             "RATELIMIT_STORAGE_URI": os.environ.get(
                 "RATELIMIT_STORAGE_URI", "memory://"
             ),
+            # Reject request bodies larger than 1 MB to prevent DoS via large payloads.
+            "MAX_CONTENT_LENGTH": 1 * 1024 * 1024,
         }
     )
     app.config.update(config or {})
@@ -53,6 +55,31 @@ def create_app(config: dict | None = None) -> Flask:
         app.config["HA_REQUIRE_AUTH"] = False
 
     CORS(app)
+
+    @app.after_request
+    def _security_headers(response: Response) -> Response:
+        """Add defensive HTTP security headers to every response."""
+        # Prevent MIME-type sniffing
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        # Disallow framing of this app (clickjacking protection)
+        response.headers["X-Frame-Options"] = "DENY"
+        # Control referrer information sent to third parties
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        # Restrict powerful browser features not used by this app
+        response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
+        # Content Security Policy:
+        #   - Scripts/styles/fonts allowed from self and the Bootstrap CDN used by the template.
+        #   - 'unsafe-inline' is required because the template uses onclick="" attributes.
+        #   - API calls restricted to same origin (connect-src 'self').
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "font-src 'self' https://cdn.jsdelivr.net; "
+            "img-src 'self' data:; "
+            "connect-src 'self';"
+        )
+        return response
 
     # Initialise rate limiter with the app
     limiter.init_app(app)
