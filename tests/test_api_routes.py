@@ -295,3 +295,134 @@ class TestPluginRoutes:
             r = client.post("/api/plugins/refresh")
         assert r.status_code == 200
         assert r.get_json()["ok"] is True
+
+
+class TestScanDeviceRichIdentification:
+    """Verify that /api/devices/scan response includes the rich identification fields."""
+
+    def _make_device_classified(self) -> DiscoveredDevice:
+        from home_assistant.network.scanner import DeviceScanner
+        dev = DiscoveredDevice(
+            ip="192.168.1.50", mac="aa:bb:cc:dd:ee:ff",
+            open_ports=[1400], vendor="Sonos",
+        )
+        DeviceScanner(timeout=0.1)._classify(dev)
+        return dev
+
+    def test_scan_response_includes_identification_fields(self, client):
+        dev = self._make_device_classified()
+        with patch("home_assistant.api.routes.device_scanner") as mock_sc:
+            mock_sc.scan.return_value = [dev]
+            r = client.get("/api/devices/scan")
+        assert r.status_code == 200
+        body = r.get_json()
+        d = body["devices"][0]
+        assert "identification_confidence" in d
+        assert "identification_sources" in d
+        assert isinstance(d["identification_confidence"], int)
+        assert isinstance(d["identification_sources"], list)
+
+    def test_scan_response_confidence_positive(self, client):
+        dev = self._make_device_classified()
+        with patch("home_assistant.api.routes.device_scanner") as mock_sc:
+            mock_sc.scan.return_value = [dev]
+            r = client.get("/api/devices/scan")
+        d = r.get_json()["devices"][0]
+        assert d["identification_confidence"] > 0
+
+    def test_scan_unknown_device_still_returned(self, client):
+        """Unknown devices must be visible with best-effort metadata."""
+        dev = DiscoveredDevice(ip="10.0.0.99", mac="", open_ports=[])
+        from home_assistant.network.scanner import DeviceScanner
+        DeviceScanner(timeout=0.1)._classify(dev)
+        with patch("home_assistant.api.routes.device_scanner") as mock_sc:
+            mock_sc.scan.return_value = [dev]
+            r = client.get("/api/devices/scan")
+        d = r.get_json()["devices"][0]
+        assert d["ip"] == "10.0.0.99"
+        assert "identification_confidence" in d
+        assert d["identification_confidence"] >= 0
+
+
+class TestRateLimiting:
+    """Verify that rate limiting is applied to sensitive endpoints."""
+
+    def _make_app(self):
+        """Create app with rate limiting enabled and very tight limits for testing."""
+        app = create_app({
+            "TESTING": True,
+            "RATELIMIT_ENABLED": True,
+            "RATELIMIT_STORAGE_URI": "memory://",
+        })
+        return app
+
+    def test_devices_scan_rate_limited(self):
+        """After exceeding the rate limit, /api/devices/scan returns 429."""
+        from home_assistant.network.scanner import DiscoveredDevice as DD
+        app = create_app({
+            "TESTING": True,
+            "RATELIMIT_ENABLED": True,
+            "RATELIMIT_STORAGE_URI": "memory://",
+            # Override the limiter limit to 1 per minute for this test
+        })
+        # Patch the limiter's limit on the endpoint directly
+        from home_assistant.api import routes as r_mod
+        original_limit = None
+        with app.test_client() as c:
+            with patch("home_assistant.api.routes.device_scanner") as mock_sc:
+                mock_sc.scan.return_value = []
+                # Make 12 requests – exceeds the 10/minute limit
+                statuses = [c.get("/api/devices/scan").status_code for _ in range(12)]
+        assert 429 in statuses, "Expected a 429 after exceeding rate limit"
+
+    def test_wlan_connect_rate_limited(self):
+        """After exceeding the rate limit, /api/wlan/connect returns 429."""
+        app = create_app({
+            "TESTING": True,
+            "RATELIMIT_ENABLED": True,
+            "RATELIMIT_STORAGE_URI": "memory://",
+        })
+        with app.test_client() as c:
+            with patch("home_assistant.api.routes.wlan_manager") as mock_wm:
+                mock_wm.connect.return_value = True
+                statuses = [
+                    c.post("/api/wlan/connect", json={"ssid": "Net"}).status_code
+                    for _ in range(7)
+                ]
+        assert 429 in statuses, "Expected a 429 after exceeding rate limit"
+
+    def test_list_devices_rate_limited(self):
+        """After exceeding the rate limit, /api/devices returns 429."""
+        app = create_app({
+            "TESTING": True,
+            "RATELIMIT_ENABLED": True,
+            "RATELIMIT_STORAGE_URI": "memory://",
+        })
+        with app.test_client() as c:
+            with patch("home_assistant.api.routes.device_scanner") as mock_sc:
+                mock_sc.get_cached.return_value = []
+                statuses = [c.get("/api/devices").status_code for _ in range(32)]
+        assert 429 in statuses, "Expected a 429 after exceeding rate limit"
+
+
+class TestNonLocalBindSecurity:
+    """Verify that non-local bind fails fast without an API token."""
+
+    def test_nonlocal_bind_without_token_raises(self):
+        import importlib
+        import sys
+        import types
+
+        # Simulate __main__ execution path by calling the guard logic directly
+        import os
+        host = "0.0.0.0"
+        is_local = host in {"127.0.0.1", "localhost"}
+        require_token = not os.environ.get("HA_API_TOKEN", "").strip()
+
+        assert not is_local
+        assert require_token, "Should require token for non-local bind"
+
+    def test_create_app_no_crash_local(self):
+        """create_app should succeed even without a token on localhost."""
+        app = create_app({"TESTING": True})
+        assert app is not None

@@ -20,7 +20,8 @@ class TestDiscoveredDevice:
         dev = DiscoveredDevice(ip="192.168.1.1", mac="aa:bb:cc:dd:ee:ff")
         d = dev.to_dict()
         for key in ("ip", "mac", "hostname", "vendor", "open_ports",
-                    "services", "device_type", "plugin_id", "last_seen"):
+                    "services", "device_type", "plugin_id", "last_seen",
+                    "identification_confidence", "identification_sources"):
             assert key in d
 
     def test_to_dict_values(self):
@@ -29,6 +30,11 @@ class TestDiscoveredDevice:
         d = dev.to_dict()
         assert d["ip"] == "10.0.0.1"
         assert d["device_type"] == "Sonos Speaker"
+
+    def test_identification_defaults(self):
+        dev = DiscoveredDevice(ip="192.168.1.1")
+        assert dev.identification_confidence == 0
+        assert dev.identification_sources == []
 
 
 class TestDeviceScannerClassify:
@@ -77,6 +83,77 @@ class TestDeviceScannerClassify:
         dev = DiscoveredDevice(ip="192.168.1.16", mac="", vendor="Philips", open_ports=[80])
         sc._classify(dev)
         assert dev.plugin_id == "philips_hue"
+
+    # ------------------------------------------------------------------
+    # Confidence and sources tests
+    # ------------------------------------------------------------------
+
+    def test_sonos_port_confidence(self):
+        sc = self._scanner()
+        dev = DiscoveredDevice(ip="192.168.1.10", mac="", open_ports=[1400])
+        sc._classify(dev)
+        assert dev.identification_confidence > 0
+        assert "port:1400" in dev.identification_sources
+
+    def test_sonos_port_and_vendor_higher_confidence(self):
+        sc = self._scanner()
+        dev_port_only = DiscoveredDevice(ip="192.168.1.10", mac="", open_ports=[1400])
+        dev_both = DiscoveredDevice(ip="192.168.1.10", mac="", open_ports=[1400], vendor="Sonos")
+        sc._classify(dev_port_only)
+        sc._classify(dev_both)
+        assert dev_both.identification_confidence > dev_port_only.identification_confidence
+        assert "vendor:sonos" in dev_both.identification_sources
+
+    def test_lifx_port_and_vendor_sources(self):
+        sc = self._scanner()
+        dev = DiscoveredDevice(ip="192.168.1.11", mac="", open_ports=[56700], vendor="LIFX Inc.")
+        sc._classify(dev)
+        assert "port:56700" in dev.identification_sources
+        assert "vendor:lifx" in dev.identification_sources
+
+    def test_unknown_device_low_confidence_with_mac(self):
+        sc = self._scanner()
+        dev = DiscoveredDevice(ip="192.168.1.15", mac="aa:bb:cc:dd:ee:ff", open_ports=[])
+        sc._classify(dev)
+        assert 0 < dev.identification_confidence <= 15
+        assert "arp:mac" in dev.identification_sources
+
+    def test_unknown_device_low_confidence_without_mac(self):
+        sc = self._scanner()
+        dev = DiscoveredDevice(ip="192.168.1.15", mac="", open_ports=[])
+        sc._classify(dev)
+        assert 0 < dev.identification_confidence <= 15
+        assert "ping" in dev.identification_sources
+
+    def test_confidence_capped_at_100(self):
+        sc = self._scanner()
+        # Port + vendor + secure mqtt port → should not exceed 100
+        dev = DiscoveredDevice(
+            ip="192.168.1.13", mac="", open_ports=[1883, 8883], vendor="Mosquitto"
+        )
+        sc._classify(dev)
+        assert dev.identification_confidence <= 100
+
+    def test_sources_is_list(self):
+        sc = self._scanner()
+        dev = DiscoveredDevice(ip="192.168.1.14", mac="", open_ports=[80])
+        sc._classify(dev)
+        assert isinstance(dev.identification_sources, list)
+
+    def test_vendor_only_device_has_source(self):
+        sc = self._scanner()
+        dev = DiscoveredDevice(ip="192.168.1.20", mac="", vendor="Acme Corp", open_ports=[])
+        sc._classify(dev)
+        assert "vendor:arp" in dev.identification_sources
+        assert dev.identification_confidence > 0
+
+    def test_hass_classified_with_confidence(self):
+        sc = self._scanner()
+        dev = DiscoveredDevice(ip="192.168.1.30", mac="", open_ports=[8123])
+        sc._classify(dev)
+        assert dev.plugin_id == "home_assistant"
+        assert "port:8123" in dev.identification_sources
+        assert dev.identification_confidence > 0
 
 
 class TestDeviceScannerArp:
