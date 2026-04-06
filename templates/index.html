@@ -33,13 +33,17 @@
 
   <!-- Scan bar -->
   <div class="row mb-4">
-    <div class="col-12 d-flex gap-2 align-items-center">
+    <div class="col-12 d-flex gap-2 align-items-center flex-wrap">
       <button class="btn btn-success" id="scan-btn" onclick="scanDevices()">
         <i class="bi bi-radar"></i> Scan Network
       </button>
       <input type="text" id="network-input" class="form-control w-auto"
-             placeholder="e.g. 192.168.1.0/24" title="Optional: specify subnet"/>
+             placeholder="e.g. 192.168.1.0/24" title="Optional: specify subnet (overrides WLAN auto-detect)"/>
+      <span id="scan-context"></span>
       <span id="scan-status" class="text-muted small"></span>
+    </div>
+    <div class="col-12 mt-1">
+      <span id="scan-context-info"></span>
     </div>
   </div>
 

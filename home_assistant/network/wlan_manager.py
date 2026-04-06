@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 import platform
@@ -37,6 +38,11 @@ _DEMO_STATUS = {
 
 def _demo_mode_enabled() -> bool:
     return os.environ.get("HA_DEMO_MODE", "0") == "1"
+
+
+def _inet_ntoa(mask_int: int) -> str:
+    """Convert a 32-bit integer network mask to dotted-decimal notation."""
+    return str(ipaddress.IPv4Address(mask_int))
 
 
 def _split_nmcli(line: str) -> list[str]:
@@ -331,6 +337,115 @@ class WlanManager:
             "demo": demo,
             "notes": notes,
         }
+
+    def get_subnet(self) -> Optional[str]:
+        """Return the CIDR subnet for the currently active WLAN connection.
+
+        Returns ``None`` when not connected or when the subnet cannot be
+        determined from the active interface.
+        """
+        status = self.get_status()
+        if not status.connected:
+            return None
+        return self._subnet_for_interface(status.interface, status.ip_address)
+
+    def _subnet_for_interface(self, interface: str, ip_hint: str = "") -> Optional[str]:
+        """Derive the CIDR subnet from *interface* or fall back to *ip_hint*.
+
+        Supports Linux (``ip route``), macOS (``ifconfig``) and Windows
+        (``netsh interface ip show address``).  When all platform-specific
+        methods fail the method falls back to a /24 subnet derived from
+        *ip_hint*, if that is provided.
+        """
+        system = platform.system()
+
+        if system == "Linux" and interface:
+            try:
+                out = subprocess.check_output(
+                    ["ip", "-4", "route", "show", "dev", interface],
+                    text=True,
+                    timeout=5,
+                )
+                for line in out.splitlines():
+                    line = line.strip()
+                    if line.startswith("default"):
+                        continue
+                    m = re.match(r"(\d+\.\d+\.\d+\.\d+/\d+)", line)
+                    if m:
+                        return m.group(1)
+            except Exception as exc:
+                logger.debug("ip route for interface %s failed: %s", interface, exc)
+
+        if system == "Darwin" and interface:
+            try:
+                out = subprocess.check_output(
+                    ["ifconfig", interface],
+                    text=True,
+                    timeout=5,
+                )
+                m = re.search(
+                    r"inet (\d+\.\d+\.\d+\.\d+)\s+netmask\s+(0x[0-9a-fA-F]+|\d+\.\d+\.\d+\.\d+)",
+                    out,
+                )
+                if m:
+                    ip = m.group(1)
+                    mask_str = m.group(2)
+                    if mask_str.startswith("0x"):
+                        mask_int = int(mask_str, 16)
+                        mask = _inet_ntoa(mask_int)
+                    else:
+                        mask = mask_str
+                    net = ipaddress.IPv4Network(f"{ip}/{mask}", strict=False)
+                    return str(net)
+            except Exception as exc:
+                logger.debug("ifconfig for interface %s failed: %s", interface, exc)
+
+        if system == "Windows" and interface:
+            try:
+                out = subprocess.check_output(
+                    ["netsh", "interface", "ip", "show", "address", f"name={interface}"],
+                    text=True,
+                    timeout=8,
+                    encoding="utf-8",
+                    errors="ignore",
+                )
+                ip_m = re.search(
+                    r"IP\s+Address[^:]*:\s*(\d+\.\d+\.\d+\.\d+)",
+                    out,
+                    re.IGNORECASE,
+                )
+                # Prefer "Subnet Prefix: x.x.x.x/n" format; fall back to mask.
+                prefix_m = re.search(
+                    r"Subnet\s+Prefix[^:]*:\s*\S+\s*/(\d+)",
+                    out,
+                    re.IGNORECASE,
+                )
+                mask_m = re.search(
+                    r"Subnet\s+Mask[^:]*:\s*(\d+\.\d+\.\d+\.\d+)",
+                    out,
+                    re.IGNORECASE,
+                )
+                if ip_m and (prefix_m or mask_m):
+                    ip = ip_m.group(1)
+                    if prefix_m:
+                        net = ipaddress.IPv4Network(f"{ip}/{prefix_m.group(1)}", strict=False)
+                    else:
+                        net = ipaddress.IPv4Network(f"{ip}/{mask_m.group(1)}", strict=False)  # type: ignore[union-attr]
+                    return str(net)
+            except Exception as exc:
+                logger.debug(
+                    "netsh ip show address for interface %s failed: %s", interface, exc
+                )
+
+        # Last resort: derive /24 from the IP hint supplied by the caller.
+        if ip_hint:
+            try:
+                net = ipaddress.IPv4Network(f"{ip_hint}/24", strict=False)
+                return str(net)
+            except Exception:
+                pass
+
+        return None
 
     # ------------------------------------------------------------------
     # Private helpers
