@@ -36,6 +36,16 @@ def create_app(config: dict | None = None) -> Flask:
     # Keep tests simple unless explicitly testing auth behavior.
     if app.config.get("TESTING") and "HA_REQUIRE_AUTH" not in (config or {}):
         app.config["HA_REQUIRE_AUTH"] = False
+
+    # If auth is required but no token exists, fall back to no-auth mode.
+    # This avoids a broken local UX where protected endpoints always return 503.
+    if app.config.get("HA_REQUIRE_AUTH") and not str(app.config.get("HA_API_TOKEN", "")).strip():
+        logger.warning(
+            "HA_REQUIRE_AUTH is enabled but HA_API_TOKEN is not configured; "
+            "disabling auth for this runtime."
+        )
+        app.config["HA_REQUIRE_AUTH"] = False
+
     CORS(app)
 
     # Register blueprints
