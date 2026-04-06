@@ -89,6 +89,14 @@ class WlanManager:
 
     def __init__(self, interface: Optional[str] = None) -> None:
         self.interface = interface or self._detect_interface()
+        self._last_connect_error: str = ""
+
+    def get_last_connect_error(self) -> str:
+        """Return the latest human-readable connect error."""
+        return self._last_connect_error
+
+    def _set_connect_error(self, message: str) -> None:
+        self._last_connect_error = (message or "").strip()
 
     # ------------------------------------------------------------------
     # Public API
@@ -175,11 +183,14 @@ class WlanManager:
 
     def connect(self, ssid: str, password: str = "") -> bool:
         """Connect to an SSID using OS-native WLAN tools."""
+        self._set_connect_error("")
         if not ssid or len(ssid) > 32:
-            logger.error("Invalid SSID (empty or too long)")
+            self._set_connect_error("Invalid SSID (empty or too long)")
+            logger.error(self._last_connect_error)
             return False
         if not all(0x20 <= ord(c) <= 0x7E for c in ssid):
-            logger.error("SSID contains non-printable characters")
+            self._set_connect_error("SSID contains non-printable characters")
+            logger.error(self._last_connect_error)
             return False
 
         if platform.system() == "Windows":
@@ -190,9 +201,16 @@ class WlanManager:
             if password:
                 cmd += ["password", password]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            return result.returncode == 0
+            if result.returncode == 0:
+                return True
+
+            err = (result.stderr or result.stdout or "").strip()
+            self._set_connect_error(err or f"Failed to connect to {ssid}")
+            logger.error("Failed to connect to %s: %s", ssid, self._last_connect_error)
+            return False
         except Exception as exc:
-            logger.error("Failed to connect to %s: %s", ssid, exc)
+            self._set_connect_error(str(exc))
+            logger.error("Failed to connect to %s: %s", ssid, self._last_connect_error)
             return False
 
     def get_diagnostics(self) -> dict:
@@ -620,7 +638,9 @@ class WlanManager:
                     timeout=15,
                 )
                 if add_result.returncode != 0:
-                    logger.error("Failed to add Wi-Fi profile for %s: %s", ssid, add_result.stderr.strip())
+                    err = (add_result.stderr or add_result.stdout or "").strip()
+                    self._set_connect_error(err or f"Failed to add Wi-Fi profile for {ssid}")
+                    logger.error("Failed to add Wi-Fi profile for %s: %s", ssid, self._last_connect_error)
                     return False
             finally:
                 try:
@@ -634,9 +654,16 @@ class WlanManager:
 
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-            return result.returncode == 0
+            if result.returncode == 0:
+                return True
+
+            err = (result.stderr or result.stdout or "").strip()
+            self._set_connect_error(err or f"Failed to connect to {ssid}")
+            logger.error("Failed to connect to %s on Windows: %s", ssid, self._last_connect_error)
+            return False
         except Exception as exc:
-            logger.error("Failed to connect to %s on Windows: %s", ssid, exc)
+            self._set_connect_error(str(exc))
+            logger.error("Failed to connect to %s on Windows: %s", ssid, self._last_connect_error)
             return False
 
     @staticmethod

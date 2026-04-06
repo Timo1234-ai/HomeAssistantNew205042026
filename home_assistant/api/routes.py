@@ -118,7 +118,11 @@ def wlan_connect() -> Any:
     if not ssid:
         return jsonify({"ok": False, "error": "ssid is required"}), 400
     ok = wlan_manager.connect(ssid, password)
-    return jsonify({"ok": ok})
+    if ok:
+        return jsonify({"ok": True})
+
+    error = str(wlan_manager.get_last_connect_error() or "Connection failed")
+    return jsonify({"ok": False, "error": error})
 
 
 # -----------------------------------------------------------------------
