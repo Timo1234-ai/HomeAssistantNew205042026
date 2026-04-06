@@ -67,6 +67,8 @@ class DiscoveredDevice:
     device_type: str = "Unknown"
     plugin_id: str = ""
     last_seen: float = field(default_factory=time.time)
+    identification_confidence: int = 0
+    identification_sources: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -79,6 +81,8 @@ class DiscoveredDevice:
             "device_type": self.device_type,
             "plugin_id": self.plugin_id,
             "last_seen": self.last_seen,
+            "identification_confidence": self.identification_confidence,
+            "identification_sources": self.identification_sources,
         }
 
 
@@ -376,39 +380,77 @@ class DeviceScanner:
     # ------------------------------------------------------------------
 
     def _classify(self, dev: DiscoveredDevice) -> None:
-        """Assign device_type and plugin_id based on open ports and vendor."""
+        """Assign device_type, plugin_id, confidence and sources based on signals."""
         vendor_lower = dev.vendor.lower()
         ports = set(dev.open_ports)
+        sources: list[str] = []
+        confidence = 0
+
+        def _add_signal(src: str, pts: int) -> None:
+            nonlocal confidence
+            sources.append(src)
+            confidence = min(100, confidence + pts)
 
         if 56700 in ports or "lifx" in vendor_lower:
             dev.device_type = "LIFX Light"
             dev.plugin_id = "lifx"
+            if 56700 in ports:
+                _add_signal("port:56700", 40)
+            if "lifx" in vendor_lower:
+                _add_signal("vendor:lifx", 30)
         elif 1400 in ports or "sonos" in vendor_lower:
             dev.device_type = "Sonos Speaker"
             dev.plugin_id = "sonos"
+            if 1400 in ports:
+                _add_signal("port:1400", 40)
+            if "sonos" in vendor_lower:
+                _add_signal("vendor:sonos", 30)
         elif "philips" in vendor_lower or (
             80 in ports and "hue" in dev.hostname.lower()
         ):
             dev.device_type = "Philips Hue Bridge"
             dev.plugin_id = "philips_hue"
+            if "philips" in vendor_lower:
+                _add_signal("vendor:philips", 30)
+            if 80 in ports and "hue" in dev.hostname.lower():
+                _add_signal("port:80", 20)
+                _add_signal("hostname:hue", 20)
         elif 554 in ports:
             dev.device_type = "IP Camera"
             dev.plugin_id = "generic_camera"
+            _add_signal("port:554", 40)
         elif 1883 in ports or 8883 in ports:
             dev.device_type = "MQTT Broker"
             dev.plugin_id = "mqtt"
+            if 1883 in ports:
+                _add_signal("port:1883", 40)
+            if 8883 in ports:
+                _add_signal("port:8883", 40)
         elif 8123 in ports:
             dev.device_type = "Home Assistant"
             dev.plugin_id = "home_assistant"
+            _add_signal("port:8123", 40)
         elif 80 in ports or 8080 in ports:
             dev.device_type = "Smart HTTP Device"
             dev.plugin_id = "generic_http"
+            if 80 in ports:
+                _add_signal("port:80", 30)
+            if 8080 in ports:
+                _add_signal("port:8080", 30)
         elif dev.vendor:
             dev.device_type = f"Device ({dev.vendor})"
             dev.plugin_id = "generic"
+            _add_signal("vendor:arp", 20)
         else:
             dev.device_type = "Unknown Device"
             dev.plugin_id = "generic"
+            if dev.mac:
+                _add_signal("arp:mac", 10)
+            else:
+                _add_signal("ping", 10)
+
+        dev.identification_confidence = confidence
+        dev.identification_sources = sources
 
     # ------------------------------------------------------------------
     # mDNS
@@ -420,20 +462,29 @@ class DeviceScanner:
             mdns_results = self._zeroconf_scan()
             ip_map = {d.ip: d for d in devices}
             for ip, info in mdns_results.items():
+                svc_type = info.get("service_type", "mdns")
                 if ip in ip_map:
                     dev = ip_map[ip]
                     if info.get("service_type"):
-                        dev.services.append(info["service_type"])
+                        dev.services.append(svc_type)
                     if info.get("device_type"):
                         dev.device_type = info["device_type"]
                         dev.plugin_id = info.get("plugin_id", dev.plugin_id)
+                    mdns_src = f"mdns:{svc_type}"
+                    if mdns_src not in dev.identification_sources:
+                        dev.identification_sources.append(mdns_src)
+                    dev.identification_confidence = min(
+                        100, dev.identification_confidence + 30
+                    )
                 else:
                     # Device only visible via mDNS
                     dev = DiscoveredDevice(ip=ip)
                     dev.hostname = info.get("name", "")
                     dev.device_type = info.get("device_type", "mDNS Device")
                     dev.plugin_id = info.get("plugin_id", "generic")
-                    dev.services = [info.get("service_type", "mdns")]
+                    dev.services = [svc_type]
+                    dev.identification_sources = [f"mdns:{svc_type}"]
+                    dev.identification_confidence = 50
                     with self._lock:
                         self._devices[ip] = dev
                     devices.append(dev)

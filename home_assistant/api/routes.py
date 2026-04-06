@@ -8,6 +8,8 @@ from functools import wraps
 from typing import Any
 
 from flask import Blueprint, current_app, jsonify, request
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 from home_assistant.devices.plugin_manager import PluginManager
 from home_assistant.network.scanner import DeviceScanner
@@ -21,6 +23,13 @@ api = Blueprint("api", __name__, url_prefix="/api")
 wlan_manager: WlanManager = WlanManager()
 device_scanner: DeviceScanner = DeviceScanner()
 plugin_manager: PluginManager = PluginManager()
+
+# Rate limiter – initialised with the Flask app in app.py via limiter.init_app(app).
+limiter = Limiter(
+    key_func=get_remote_address,
+    default_limits=[],
+    storage_uri="memory://",
+)
 
 
 # -----------------------------------------------------------------------
@@ -111,6 +120,7 @@ def wlan_diagnostics() -> Any:
 
 @api.post("/wlan/connect")
 @require_api_auth
+@limiter.limit("5 per minute")
 def wlan_connect() -> Any:
     """Connect to a WLAN network."""
     data = request.get_json(force=True) or {}
@@ -132,6 +142,7 @@ def wlan_connect() -> Any:
 
 @api.get("/devices/scan")
 @require_api_auth
+@limiter.limit("10 per minute")
 def scan_devices() -> Any:
     """Trigger a network scan and return discovered devices.
 
@@ -207,6 +218,7 @@ def scan_devices() -> Any:
 
 
 @api.get("/devices")
+@limiter.limit("30 per minute")
 def list_devices() -> Any:
     """Return cached (last scanned) device list."""
     devices = device_scanner.get_cached()
