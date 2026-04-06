@@ -242,6 +242,16 @@ function deviceCard(d) {
   const services = (d.services || []).slice(0, 3).join(', ');
   const hasDistinctHostname = !!d.hostname && d.hostname !== d.ip;
   const title = hasDistinctHostname ? d.hostname : (d.vendor || d.device_type || 'Unknown device');
+  const displayName = hasDistinctHostname
+    ? d.hostname
+    : (d.mac || d.vendor || 'Unnamed device');
+  const confidence = Number.isFinite(d.identification_confidence)
+    ? Math.max(0, Math.min(100, Number(d.identification_confidence)))
+    : 0;
+  const idSources = Array.isArray(d.identification_sources)
+    ? d.identification_sources.slice(0, 3)
+    : [];
+  const idSummary = confidence > 0 ? `${confidence}% confidence` : 'Low confidence';
   // Only show the type badge when it adds info beyond the title
   const showTypeBadge = title !== d.device_type && d.device_type && d.device_type !== 'Unknown Device';
 
@@ -255,11 +265,23 @@ function deviceCard(d) {
           ${escHtml(title)}
         </div>
         <div class="text-muted" style="font-size:0.72rem">${escHtml(d.ip)}</div>
+        <div class="device-meta mt-1" title="Device name">
+          <span class="device-meta-label">Name</span>
+          <span class="device-meta-value text-truncate">${escHtml(displayName)}</span>
+        </div>
         ${showTypeBadge ? `<div class="mt-1">
           <span class="badge bg-indigo device-type-badge"
                 style="background:#6366f1!important">
             ${escHtml(d.device_type)}
           </span>
+        </div>` : ''}
+        <div class="device-meta mt-1" title="Identification confidence">
+          <span class="device-meta-label">Identified</span>
+          <span class="device-meta-value">${escHtml(idSummary)}</span>
+        </div>
+        ${idSources.length ? `<div class="device-meta mt-1" title="Identification sources">
+          <span class="device-meta-label">By</span>
+          <span class="device-meta-value">${escHtml(idSources.join(', '))}</span>
         </div>` : ''}
         ${d.vendor ? `<div class="text-muted mt-1" style="font-size:0.7rem">${escHtml(d.vendor)}</div>` : ''}
         ${services ? `<div class="text-muted mt-1" style="font-size:0.68rem">${escHtml(services)}</div>` : ''}

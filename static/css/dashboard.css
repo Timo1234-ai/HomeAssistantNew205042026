@@ -28,6 +28,30 @@ body {
   letter-spacing: 0.04em;
 }
 
+.device-meta {
+  display: flex;
+  gap: 0.35rem;
+  align-items: baseline;
+  font-size: 0.68rem;
+  color: #a5b4fc;
+  min-width: 0;
+}
+
+.device-meta-label {
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex: 0 0 auto;
+}
+
+.device-meta-value {
+  color: #e5e7eb;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── Network list ───────────────────────────────────────────── */
 .network-row {
   display: flex;
