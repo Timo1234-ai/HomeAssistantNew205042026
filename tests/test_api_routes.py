@@ -358,16 +358,11 @@ class TestRateLimiting:
 
     def test_devices_scan_rate_limited(self):
         """After exceeding the rate limit, /api/devices/scan returns 429."""
-        from home_assistant.network.scanner import DiscoveredDevice as DD
         app = create_app({
             "TESTING": True,
             "RATELIMIT_ENABLED": True,
             "RATELIMIT_STORAGE_URI": "memory://",
-            # Override the limiter limit to 1 per minute for this test
         })
-        # Patch the limiter's limit on the endpoint directly
-        from home_assistant.api import routes as r_mod
-        original_limit = None
         with app.test_client() as c:
             with patch("home_assistant.api.routes.device_scanner") as mock_sc:
                 mock_sc.scan.return_value = []

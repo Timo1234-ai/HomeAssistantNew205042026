@@ -386,7 +386,7 @@ class DeviceScanner:
         sources: list[str] = []
         confidence = 0
 
-        def _add(src: str, pts: int) -> None:
+        def _add_signal(src: str, pts: int) -> None:
             nonlocal confidence
             sources.append(src)
             confidence = min(100, confidence + pts)
@@ -395,59 +395,59 @@ class DeviceScanner:
             dev.device_type = "LIFX Light"
             dev.plugin_id = "lifx"
             if 56700 in ports:
-                _add("port:56700", 40)
+                _add_signal("port:56700", 40)
             if "lifx" in vendor_lower:
-                _add("vendor:lifx", 30)
+                _add_signal("vendor:lifx", 30)
         elif 1400 in ports or "sonos" in vendor_lower:
             dev.device_type = "Sonos Speaker"
             dev.plugin_id = "sonos"
             if 1400 in ports:
-                _add("port:1400", 40)
+                _add_signal("port:1400", 40)
             if "sonos" in vendor_lower:
-                _add("vendor:sonos", 30)
+                _add_signal("vendor:sonos", 30)
         elif "philips" in vendor_lower or (
             80 in ports and "hue" in dev.hostname.lower()
         ):
             dev.device_type = "Philips Hue Bridge"
             dev.plugin_id = "philips_hue"
             if "philips" in vendor_lower:
-                _add("vendor:philips", 30)
+                _add_signal("vendor:philips", 30)
             if 80 in ports and "hue" in dev.hostname.lower():
-                _add("port:80", 20)
-                _add("hostname:hue", 20)
+                _add_signal("port:80", 20)
+                _add_signal("hostname:hue", 20)
         elif 554 in ports:
             dev.device_type = "IP Camera"
             dev.plugin_id = "generic_camera"
-            _add("port:554", 40)
+            _add_signal("port:554", 40)
         elif 1883 in ports or 8883 in ports:
             dev.device_type = "MQTT Broker"
             dev.plugin_id = "mqtt"
             if 1883 in ports:
-                _add("port:1883", 40)
+                _add_signal("port:1883", 40)
             if 8883 in ports:
-                _add("port:8883", 40)
+                _add_signal("port:8883", 40)
         elif 8123 in ports:
             dev.device_type = "Home Assistant"
             dev.plugin_id = "home_assistant"
-            _add("port:8123", 40)
+            _add_signal("port:8123", 40)
         elif 80 in ports or 8080 in ports:
             dev.device_type = "Smart HTTP Device"
             dev.plugin_id = "generic_http"
             if 80 in ports:
-                _add("port:80", 30)
+                _add_signal("port:80", 30)
             if 8080 in ports:
-                _add("port:8080", 30)
+                _add_signal("port:8080", 30)
         elif dev.vendor:
             dev.device_type = f"Device ({dev.vendor})"
             dev.plugin_id = "generic"
-            _add("vendor:arp", 20)
+            _add_signal("vendor:arp", 20)
         else:
             dev.device_type = "Unknown Device"
             dev.plugin_id = "generic"
             if dev.mac:
-                _add("arp:mac", 10)
+                _add_signal("arp:mac", 10)
             else:
-                _add("ping", 10)
+                _add_signal("ping", 10)
 
         dev.identification_confidence = confidence
         dev.identification_sources = sources

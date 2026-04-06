@@ -115,6 +115,7 @@ class TestDeviceScannerClassify:
         sc = self._scanner()
         dev = DiscoveredDevice(ip="192.168.1.15", mac="aa:bb:cc:dd:ee:ff", open_ports=[])
         sc._classify(dev)
+        # Only the ARP/MAC presence signal (10 pts) fires for unknown devices with a MAC
         assert 0 < dev.identification_confidence <= 15
         assert "arp:mac" in dev.identification_sources
 
@@ -122,6 +123,7 @@ class TestDeviceScannerClassify:
         sc = self._scanner()
         dev = DiscoveredDevice(ip="192.168.1.15", mac="", open_ports=[])
         sc._classify(dev)
+        # Only the ping presence signal (10 pts) fires for unknown devices without a MAC
         assert 0 < dev.identification_confidence <= 15
         assert "ping" in dev.identification_sources
 
