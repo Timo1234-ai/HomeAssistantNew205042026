@@ -155,12 +155,13 @@ async function scanDevices() {
     if (!r.ok) {
       // Structured error from WLAN-scoped scan (e.g. not connected)
       statusEl.innerHTML = `<span class="text-danger"><i class="bi bi-exclamation-triangle"></i> ${escHtml(body.error || 'Scan failed')}</span>`;
+      renderDevices([]);
       return;
     }
 
     // Response is {devices: [...], scan_context: {...}}
-    const devices = body.devices ?? [];
-    const ctx = body.scan_context ?? {};
+    const devices = Array.isArray(body.devices) ? body.devices : [];
+    const ctx = body.scan_context || {};
     renderDevices(devices);
     statusEl.textContent = `Found ${devices.length} device(s).`;
 

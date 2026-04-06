@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 from functools import wraps
 from typing import Any
@@ -137,27 +138,30 @@ def scan_devices() -> Any:
     Optional query parameters:
 
     * ``network`` – explicit CIDR subnet, e.g. ``192.168.1.0/24``.
-    * ``wlan`` – SSID of the currently connected WLAN.  When supplied the
+      Non-CIDR values are treated as SSID aliases for convenience.
+    * ``wlan`` – SSID of the currently connected WLAN. When supplied the
       endpoint resolves the subnet from the active WLAN connection and uses
       it for the scan, returning the resolved context alongside the results.
-      Returns an error if the host is not connected to the requested SSID.
     """
-    network: Optional[str] = request.args.get("network") or None
-    ssid: Optional[str] = request.args.get("wlan") or None
+    network_raw = (request.args.get("network") or "").strip()
+    network: str | None = network_raw or None
+    ssid: str | None = (request.args.get("wlan") or "").strip() or None
+
+    # Convenience: allow users to pass SSID in the network field.
+    if ssid is None and network and "/" not in network:
+        ssid = network
+        network = None
 
     scan_context: dict[str, Any] = {}
 
-    if ssid and network is None:
+    if ssid:
         status = wlan_manager.get_status()
         if not status.connected:
             return jsonify({
                 "ok": False,
-                "error": (
-                    f"Not connected to any WLAN. "
-                    f"Connect to '{ssid}' first before scanning."
-                ),
+                "error": f"Connect to '{ssid}' first before scanning.",
             }), 409
-        if status.ssid != ssid:
+        if status.ssid.strip().lower() != ssid.lower():
             return jsonify({
                 "ok": False,
                 "error": (
@@ -165,7 +169,14 @@ def scan_devices() -> Any:
                     f"Connect to '{ssid}' first before scanning."
                 ),
             }), 409
+
         subnet = wlan_manager.get_subnet()
+        if not subnet and status.ip_address:
+            try:
+                derived = ipaddress.ip_network(f"{status.ip_address}/24", strict=False)
+                subnet = f"{derived.network_address}/{derived.prefixlen}"
+            except ValueError:
+                subnet = None
         if not subnet:
             return jsonify({
                 "ok": False,
@@ -174,13 +185,21 @@ def scan_devices() -> Any:
                     f"(interface: {status.interface or 'unknown'})."
                 ),
             }), 500
+
         network = subnet
         scan_context = {
-            "ssid": ssid,
+            "ssid": status.ssid,
             "interface": status.interface,
             "subnet": subnet,
         }
     elif network:
+        try:
+            ipaddress.ip_network(network, strict=False)
+        except ValueError:
+            return jsonify({
+                "ok": False,
+                "error": "Invalid subnet format. Use CIDR like 192.168.68.0/24.",
+            }), 400
         scan_context["subnet"] = network
 
     devices = device_scanner.scan(network)

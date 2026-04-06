@@ -18,6 +18,15 @@ def client():
         yield c
 
 
+@pytest.fixture()
+def auth_client():
+    app = create_app(
+        {"TESTING": True, "HA_REQUIRE_AUTH": True, "HA_API_TOKEN": "secret-token"}
+    )
+    with app.test_client() as c:
+        yield c
+
+
 class TestWlanRoutes:
     def test_wlan_status_connected(self, client):
         status = WlanStatus(
@@ -89,6 +98,34 @@ class TestWlanRoutes:
         assert r.status_code == 200
         assert r.get_json()["ok"] is False
 
+    def test_wlan_connect_requires_auth(self, auth_client):
+        r = auth_client.post("/api/wlan/connect", json={"ssid": "TestNet"})
+        assert r.status_code == 401
+
+    def test_wlan_connect_with_token(self, auth_client):
+        with patch("home_assistant.api.routes.wlan_manager") as mock_wm:
+            mock_wm.connect.return_value = True
+            r = auth_client.post(
+                "/api/wlan/connect",
+                json={"ssid": "TestNet"},
+                headers={"X-API-Token": "secret-token"},
+            )
+        assert r.status_code == 200
+        assert r.get_json()["ok"] is True
+
+    def test_wlan_diagnostics_requires_debug_or_auth(self, auth_client):
+        r = auth_client.get("/api/wlan/diagnostics")
+        assert r.status_code == 403
+
+    def test_wlan_diagnostics_with_token(self, auth_client):
+        with patch("home_assistant.api.routes.wlan_manager") as mock_wm:
+            mock_wm.get_diagnostics.return_value = {"ok": True}
+            r = auth_client.get(
+                "/api/wlan/diagnostics",
+                headers={"Authorization": "Bearer secret-token"},
+            )
+        assert r.status_code == 200
+
 
 class TestDeviceRoutes:
     def _make_device(self) -> DiscoveredDevice:
@@ -140,6 +177,21 @@ class TestDeviceRoutes:
         assert body["scan_context"]["interface"] == "wlan0"
         mock_sc.scan.assert_called_once_with("192.168.1.0/24")
 
+    def test_scan_devices_network_ssid_alias_resolves_subnet(self, client):
+        dev = self._make_device()
+        status = WlanStatus(
+            connected=True, ssid="hacienda2", ip_address="192.168.68.129",
+            interface="Wi-Fi", signal=80,
+        )
+        with patch("home_assistant.api.routes.wlan_manager") as mock_wm:
+            mock_wm.get_status.return_value = status
+            mock_wm.get_subnet.return_value = "192.168.68.0/24"
+            with patch("home_assistant.api.routes.device_scanner") as mock_sc:
+                mock_sc.scan.return_value = [dev]
+                r = client.get("/api/devices/scan?network=hacienda2")
+        assert r.status_code == 200
+        mock_sc.scan.assert_called_once_with("192.168.68.0/24")
+
     def test_scan_devices_wlan_not_connected(self, client):
         status = WlanStatus(connected=False)
         with patch("home_assistant.api.routes.wlan_manager") as mock_wm:
@@ -172,10 +224,11 @@ class TestDeviceRoutes:
         with patch("home_assistant.api.routes.wlan_manager") as mock_wm:
             mock_wm.get_status.return_value = status
             mock_wm.get_subnet.return_value = None
-            r = client.get("/api/devices/scan?wlan=HomeNet")
-        assert r.status_code == 500
-        body = r.get_json()
-        assert body["ok"] is False
+            with patch("home_assistant.api.routes.device_scanner") as mock_sc:
+                mock_sc.scan.return_value = []
+                r = client.get("/api/devices/scan?wlan=HomeNet")
+        assert r.status_code == 200
+        mock_sc.scan.assert_called_once_with("192.168.1.0/24")
 
     def test_list_devices_empty(self, client):
         with patch("home_assistant.api.routes.device_scanner") as mock_sc:
