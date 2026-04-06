@@ -227,6 +227,26 @@ class DeviceScanner:
     def _arp_scan(network: str) -> dict[str, str]:
         """Return {ip: mac} using ARP table and platform-specific fallbacks."""
         hosts: dict[str, str] = {}
+        try:
+            target_net = ipaddress.ip_network(network, strict=False)
+        except ValueError:
+            target_net = None
+
+        def _is_valid_host_ip(ip: str) -> bool:
+            try:
+                addr = ipaddress.ip_address(ip)
+            except ValueError:
+                return False
+            if not isinstance(addr, ipaddress.IPv4Address):
+                return False
+            if addr.is_multicast or addr.is_unspecified or addr.is_loopback:
+                return False
+            if target_net is not None:
+                if addr not in target_net:
+                    return False
+                if addr == target_net.network_address or addr == target_net.broadcast_address:
+                    return False
+            return True
 
         # Try scapy first
         try:
@@ -234,7 +254,8 @@ class DeviceScanner:
             packet = Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=network)
             answered, _ = srp(packet, timeout=2, verbose=False)
             for _, rcv in answered:
-                hosts[rcv.psrc] = rcv.hwsrc
+                if _is_valid_host_ip(rcv.psrc):
+                    hosts[rcv.psrc] = rcv.hwsrc
             if hosts:
                 return hosts
         except Exception as exc:
@@ -251,7 +272,9 @@ class DeviceScanner:
                     r"(\d+\.\d+\.\d+\.\d+)\s+([\da-fA-F:]{17})", line
                 )
                 if m:
-                    hosts[m.group(1)] = m.group(2)
+                    ip = m.group(1)
+                    if _is_valid_host_ip(ip):
+                        hosts[ip] = m.group(2)
             if hosts:
                 return hosts
         except Exception as exc:
@@ -273,11 +296,8 @@ class DeviceScanner:
                         continue
                     ip = m.group(1)
                     mac = m.group(2).replace("-", ":").lower()
-                    try:
-                        if ipaddress.ip_address(ip) in ipaddress.ip_network(network, strict=False):
-                            hosts[ip] = mac
-                    except ValueError:
-                        continue
+                    if _is_valid_host_ip(ip):
+                        hosts[ip] = mac
                 if hosts:
                     return hosts
             except Exception as exc:
@@ -289,7 +309,8 @@ class DeviceScanner:
                 for line in fh.readlines()[1:]:
                     parts = line.split()
                     if len(parts) >= 4 and parts[2] != "0x0":
-                        hosts[parts[0]] = parts[3]
+                        if _is_valid_host_ip(parts[0]):
+                            hosts[parts[0]] = parts[3]
         except Exception as exc:
             logger.debug("/proc/net/arp read failed: %s", exc)
 

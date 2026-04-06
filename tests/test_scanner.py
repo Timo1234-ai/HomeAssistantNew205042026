@@ -136,6 +136,7 @@ class TestDeviceScannerArp:
             "  Internet Address      Physical Address      Type\n"
             "  192.168.68.1          aa-bb-cc-dd-ee-ff     dynamic\n"
             "  192.168.68.55         11-22-33-44-55-66     dynamic\n"
+            "  192.168.68.255        ff-ff-ff-ff-ff-ff     static\n"
         )
 
         def _check_output(cmd, **kwargs):
@@ -149,6 +150,7 @@ class TestDeviceScannerArp:
 
         assert hosts.get("192.168.68.1") == "aa:bb:cc:dd:ee:ff"
         assert hosts.get("192.168.68.55") == "11:22:33:44:55:66"
+        assert "192.168.68.255" not in hosts
 
     def test_ping_sweep_windows_uses_windows_ping_flags(self):
         seen = []
